@@ -1,7 +1,6 @@
 import os
 import json
 import time
-import re
 from datetime import datetime, timezone, timedelta
 import streamlit as st
 from google import genai
@@ -146,7 +145,7 @@ def calculate_dynamic_schedule():
 
 dynamic_stadiums, dynamic_timeline = calculate_dynamic_schedule()
 
-# 4. 高信頼性 AI 予想関数（gemini-2.0-flash 安定稼働）
+# 4. 高信頼性 AI 予想関数（最新の公式推奨モデルリスト）
 def analyze_with_ai(stadium, race_no, race_data, api_key):
     client = genai.Client(api_key=api_key)
     prompt = f"""
@@ -170,8 +169,13 @@ def analyze_with_ai(stadium, race_no, race_data, api_key):
   "reason": "買い目の根拠"
 }}
 """
-    # 安定・高速・高精度なモデル順
-    models = ["gemini-2.0-flash", "gemini-2.0-flash-lite"]
+    # エラーメッセージに記載の公式最新モデルリスト
+    models = [
+        "gemini-3.5-flash-lite",
+        "gemini-3.6-flash",
+        "gemini-3.7-flash",
+        "gemini-3.5-flash"
+    ]
     last_err = None
 
     for m in models:
@@ -185,7 +189,6 @@ def analyze_with_ai(stadium, race_no, race_data, api_key):
                         temperature=0.2
                     )
                 )
-                # JSON安全抽出
                 text = res.text.strip()
                 if "```json" in text:
                     text = text.split("```json")[1].split("```")[0].strip()
@@ -201,7 +204,7 @@ def analyze_with_ai(stadium, race_no, race_data, api_key):
 
 # セッション状態初期化
 if "selected_stadium" not in st.session_state:
-    st.session_state["selected_stadium"] = "下関"
+    st.session_state["selected_stadium"] = "蒲郡"
 if "selected_race" not in st.session_state:
     st.session_state["selected_race"] = 8
 
