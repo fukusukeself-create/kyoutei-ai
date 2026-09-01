@@ -4,7 +4,9 @@ from bs4 import BeautifulSoup
 import datetime
 import os
 import re
+import time
 from google import genai
+from google.genai import errors as genai_errors
 
 # ----------------------------------------------------
 # ページ基本設定
@@ -351,8 +353,11 @@ def fetch_beforeinfo(jcd: str, rno: int, hd: str):
         return None, f"直前情報取得エラー: {str(e)}"
 
 # ----------------------------------------------------
-# Gemini AI 予想エンジン (gemini-3.6-flash)
+# Gemini AI 予想エンジン (gemini-3.7-flash)
 # ----------------------------------------------------
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.7-flash")
+
+
 def analyze_with_gemini(api_key: str, venue_name: str, rno: int, racelist_data: str, before_data: str, focus_type: str):
     client = genai.Client(api_key=api_key)
     prompt = f"""
@@ -393,11 +398,27 @@ def analyze_with_gemini(api_key: str, venue_name: str, rno: int, racelist_data: 
 
 ## 4. 💡 勝負の決め手
 """
-    response = client.models.generate_content(
-        model="gemini-3.6-flash",
-        contents=prompt,
-    )
-    return response.text
+    # 需要が集中すると 503 UNAVAILABLE が返るが数秒で復帰することが多いため、
+    # 指数バックオフで数回リトライしてから諦める。
+    last_error = None
+    delay = 1.0
+    for attempt in range(4):
+        try:
+            response = client.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=prompt,
+            )
+            return response.text
+        except genai_errors.ServerError as e:
+            last_error = e
+        except genai_errors.ClientError as e:
+            if getattr(e, "code", None) != 429:
+                raise  # 認証やモデル名の誤りは待っても直らない
+            last_error = e
+        if attempt < 3:
+            time.sleep(delay)
+            delay *= 2
+    raise last_error
 
 # ----------------------------------------------------
 # 状態管理
