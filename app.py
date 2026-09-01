@@ -7,7 +7,7 @@ import re
 from google import genai
 
 # ----------------------------------------------------
-# ページ基本設定
+# ページ基本設定（モバイル・Pixel Fold最適化）
 # ----------------------------------------------------
 st.set_page_config(
     page_title="BOAT RACE",
@@ -17,7 +17,7 @@ st.set_page_config(
 )
 
 # ----------------------------------------------------
-# 日本標準時 (JST) の定義
+# 日本標準時 (JST)
 # ----------------------------------------------------
 JST = datetime.timezone(datetime.timedelta(hours=9))
 now_jst = datetime.datetime.now(JST)
@@ -28,68 +28,51 @@ today_jst_str = now_jst.strftime("%Y%m%d")
 # ----------------------------------------------------
 st.markdown("""
 <style>
+    /* 全体背景 */
     .stApp {
-        background-color: #e5e9f0;
-        font-family: -apple-system, BlinkMacSystemFont, "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif;
+        background-color: #f1f3f7;
+        font-family: -apple-system, BlinkMacSystemFont, "Hiragino Kaku Gothic ProN", Meiryo, sans-serif;
     }
     .block-container {
-        padding-top: 0.2rem !important;
-        padding-bottom: 2rem !important;
-        padding-left: 0.4rem !important;
-        padding-right: 0.4rem !important;
+        padding: 0.3rem 0.3rem 2rem 0.3rem !important;
+        max-width: 100% !important;
     }
 
     /* 最上部 公式ブルーヘッダー */
-    .top-blue-bar {
+    .br-top-bar {
         background: #0066cc;
         color: white;
-        padding: 8px 12px;
+        padding: 8px 10px;
         display: flex;
         justify-content: space-between;
         align-items: center;
         border-radius: 4px;
-        margin-bottom: 4px;
+        margin-bottom: 2px;
     }
-    .top-title {
+    .br-logo-title {
         font-size: 1.25rem;
         font-weight: 900;
         display: flex;
         align-items: center;
         gap: 6px;
     }
-    .top-icons {
-        font-size: 0.75rem;
+    .br-sub-links {
+        font-size: 0.72rem;
         font-weight: bold;
         display: flex;
-        gap: 12px;
+        gap: 8px;
     }
 
-    /* 公式ナブタブ */
-    .nav-tabs {
-        display: flex;
-        background: white;
-        border-bottom: 2px solid #0066cc;
-        margin-bottom: 8px;
-    }
-    .nav-tab-item {
-        flex: 1;
-        text-align: center;
-        padding: 6px 0;
-        font-size: 0.82rem;
-        font-weight: bold;
-        color: #0066cc;
-    }
-
-    /* 24場カード: 開催中 (ナイター) */
-    .card-night {
+    /* 開催中カード: ナイター (蒲郡・住之江・下関・若松) */
+    .card-night-box {
         border-radius: 6px;
-        border: 1.5px solid #0066cc;
+        border: 1.5px solid #6366f1;
         overflow: hidden;
-        background: white;
-        margin-bottom: 6px;
-        box-shadow: 0 1px 2px rgba(0,0,0,0.06);
+        background: #ffffff;
+        margin-bottom: 4px;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.08);
     }
-    .card-night-header {
+    .card-night-head {
         background: linear-gradient(180deg, #c7d2fe 0%, #a5b4fc 100%);
         padding: 3px 4px;
         font-weight: 900;
@@ -97,61 +80,69 @@ st.markdown("""
         color: #1e1b4b;
         text-align: center;
     }
-    
-    /* 24場カード: 開催中 (大村専用デザイン) */
-    .card-omura-header {
+
+    /* 開催中カード: 大村専用 (星空グラデーション) */
+    .card-omura-box {
+        border-radius: 6px;
+        border: 1.5px solid #0284c7;
+        overflow: hidden;
+        background: #ffffff;
+        margin-bottom: 4px;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+    }
+    .card-omura-head {
         background: linear-gradient(180deg, #38bdf8 0%, #0284c7 100%);
         padding: 3px 4px;
         font-weight: 900;
         font-size: 0.88rem;
         color: white;
-        text-shadow: 0 1px 2px rgba(0,0,0,0.3);
         text-align: center;
+        text-shadow: 0 1px 2px rgba(0,0,0,0.3);
     }
 
-    /* 24場カード: 発売終了 */
-    .card-closed {
+    /* 発売終了カード (多摩川・浜名湖・常滑・尼崎・徳山など) */
+    .card-closed-box {
         border-radius: 6px;
-        border: 1.5px solid #94a3b8;
+        border: 1px solid #94a3b8;
         overflow: hidden;
-        background: white;
-        margin-bottom: 6px;
+        background: #ffffff;
+        margin-bottom: 4px;
     }
-    .card-closed-header {
+    .card-closed-head {
         background: #94a3b8;
-        padding: 2px 4px;
+        padding: 3px 4px;
         font-weight: 800;
         font-size: 0.82rem;
         color: #0f172a;
         text-align: center;
     }
     .card-closed-body {
-        background: white;
-        color: #1e293b;
+        background: #ffffff;
+        color: #334155;
         font-weight: 800;
-        font-size: 0.82rem;
+        font-size: 0.8rem;
         text-align: center;
         padding: 4px 2px;
     }
 
-    /* 24場カード: 非開催 (--) */
-    .card-none {
+    /* 非開催カード (--) */
+    .card-none-box {
         border-radius: 6px;
         background: #d8dde6;
         border: 1px solid #cbd5e1;
         text-align: center;
         padding: 10px 2px;
-        margin-bottom: 6px;
+        margin-bottom: 4px;
         color: #475569;
         font-weight: bold;
-        font-size: 0.88rem;
+        font-size: 0.85rem;
     }
 
     /* G3バッジ */
-    .g-badge {
+    .badge-g3 {
         background-color: #0066cc;
         color: white;
-        font-size: 0.62rem;
+        font-size: 0.65rem;
         padding: 1px 3px;
         border-radius: 2px;
         font-weight: bold;
@@ -159,36 +150,45 @@ st.markdown("""
     }
 
     /* 締切順リストカード */
-    .dl-item {
+    .dl-row {
         border-radius: 6px;
         border: 1.5px solid #0066cc;
         margin-bottom: 6px;
         overflow: hidden;
-        background: white;
+        background: #ffffff;
         display: flex;
         align-items: center;
     }
-    .dl-item-urgent {
+    .dl-row-urgent {
         border: 2px solid #ef4444;
         background: #fff1f2;
     }
-    .dl-col-left {
-        width: 32%;
-        padding: 8px 6px;
+    .dl-left-part {
+        width: 30%;
+        padding: 8px 4px;
         font-weight: 900;
-        font-size: 0.92rem;
+        font-size: 0.9rem;
         text-align: center;
         border-right: 1px solid #cbd5e1;
     }
-    .dl-col-right {
-        width: 68%;
-        padding: 6px 10px;
+    .dl-right-part {
+        width: 70%;
+        padding: 6px 8px;
+    }
+
+    /* ボタン共通縮小 */
+    div[data-testid="stButton"] > button {
+        width: 100%;
+        border-radius: 4px;
+        padding: 2px 4px;
+        min-height: 26px;
+        font-size: 0.8rem;
     }
 </style>
 """, unsafe_allow_html=True)
 
 # ----------------------------------------------------
-# 24場 定義
+# 24場 定義データ
 # ----------------------------------------------------
 VENUES = [
     {"code": "01", "name": "桐生", "type": "ナイター"},
@@ -218,14 +218,14 @@ VENUES = [
 ]
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 }
 
 # ----------------------------------------------------
-# 堅牢な開催データ取得ロジック（JST & 場コード完全分離）
+# 堅牢な公式スクレイピング（個別パース）
 # ----------------------------------------------------
-@st.cache_data(ttl=20)
-def fetch_all_venues_status_robust(hd: str):
+@st.cache_data(ttl=15)
+def fetch_all_venues_status_perfect(hd: str):
     url = f"https://www.boatrace.jp/owpc/pc/race/index?hd={hd}"
     venue_status = {}
     for v in VENUES:
@@ -246,65 +246,70 @@ def fetch_all_venues_status_robust(hd: str):
         res.encoding = res.apparent_encoding
         soup = BeautifulSoup(res.text, "html.parser")
         
-        # リンク `jcd=XX` を起点に各場の行を個別に抽出
-        tables = soup.find_all("table")
-        for table in tables:
-            rows = table.find_all("tr")
-            for row in rows:
-                link = row.find("a", href=re.compile(r"jcd=(\d{2})"))
-                if not link:
-                    continue
-                m = re.search(r"jcd=(\d{2})", link.get("href", ""))
-                if not m:
-                    continue
-                jcd = m.group(1)
-                if jcd not in venue_status:
-                    continue
+        # table, tbody, div.table1 の中から各場を探索
+        blocks = soup.find_all(["tbody", "table", "div"], class_=re.compile(r"table1|unit|race"))
+        if not blocks:
+            blocks = soup.find_all("table")
 
-                row_text = " ".join(row.get_text().split())
+        for block in blocks:
+            b_text = " ".join(block.get_text().split())
+            for v in VENUES:
+                code = v["code"]
+                name = v["name"]
+                
+                # ブロック内に場名または jcd=XX があるか確認
+                if (name in b_text) or (f"jcd={code}" in str(block)):
+                    # すでに active になっていれば上書きしない
+                    if venue_status[code]["status"] == "active":
+                        continue
 
-                # グレード抽出
-                grade = ""
-                if "SG" in row_text: grade = "SG"
-                elif "G1" in row_text or "GI" in row_text: grade = "G1"
-                elif "G2" in row_text or "GII" in row_text: grade = "G2"
-                elif "G3" in row_text or "GIII" in row_text: grade = "G3"
+                    # グレード抽出
+                    grade = ""
+                    if "SG" in b_text: grade = "SG"
+                    elif "G1" in b_text or "GI" in b_text: grade = "G1"
+                    elif "G2" in b_text or "GII" in b_text: grade = "G2"
+                    elif "G3" in b_text or "GIII" in b_text: grade = "G3"
 
-                # 日程抽出
-                day_m = re.search(r"(初日|\d+日目|最終日)", row_text)
-                day_text = day_m.group(1) if day_m else "一般"
+                    # 日程抽出 (例: 3日目, 最終日, 初日)
+                    day_m = re.search(r"(初日|\d+日目|最終日)", b_text)
+                    day_text = day_m.group(1) if day_m else "一般"
 
-                # 発売終了判定
-                if "発売終了" in row_text or "終了" in row_text:
-                    venue_status[jcd]["status"] = "closed"
-                    venue_status[jcd]["grade"] = grade
-                    venue_status[jcd]["day_text"] = day_text
-                else:
-                    # 締切時間 & レース番号抽出 (例: 11R 20:02)
-                    time_m = re.search(r"(\d{1,2})R\s*(\d{1,2}:\d{2})", row_text)
-                    if time_m:
-                        rno = int(time_m.group(1))
-                        dtime = time_m.group(2)
-                        venue_status[jcd]["status"] = "active"
-                        venue_status[jcd]["grade"] = grade
-                        venue_status[jcd]["day_text"] = day_text
-                        venue_status[jcd]["next_rno"] = rno
-                        venue_status[jcd]["deadline"] = dtime
+                    # 締切時刻（例: 20:02, 20:06 等）の存在を探索
+                    times = re.findall(r"(\d{1,2}:\d{2})", b_text)
+                    rnos = re.findall(r"(\d{1,2})R", b_text)
+
+                    if times:
+                        # 時刻が存在する場合は絶対に開催中（active）
+                        dtime = times[0]
+                        rno = int(rnos[0]) if rnos else 11
                         
-                        rname_m = re.search(r"\d{1,2}R\s+([^\d\s]{2,10})", row_text)
+                        rname_m = re.search(rf"{rno}R\s*([^\d\s]{{2,8}})", b_text)
                         rname = rname_m.group(1) if rname_m else "予選"
-                        venue_status[jcd]["race_name"] = rname
 
-                        deadline_list.append({
-                            "jcd": jcd,
-                            "name": venue_status[jcd]["name"],
-                            "rno": rno,
-                            "deadline": dtime,
-                            "type": venue_status[jcd]["type"],
-                            "grade": grade,
-                            "day_text": day_text,
-                            "race_name": rname
-                        })
+                        venue_status[code]["status"] = "active"
+                        venue_status[code]["grade"] = grade
+                        venue_status[code]["day_text"] = day_text
+                        venue_status[code]["next_rno"] = rno
+                        venue_status[code]["deadline"] = dtime
+                        venue_status[code]["race_name"] = rname
+
+                        # 重複登録防止
+                        if not any(d["jcd"] == code for d in deadline_list):
+                            deadline_list.append({
+                                "jcd": code,
+                                "name": name,
+                                "rno": rno,
+                                "deadline": dtime,
+                                "type": v["type"],
+                                "grade": grade,
+                                "day_text": day_text,
+                                "race_name": rname
+                            })
+                    elif ("発売終了" in b_text) or ("終了" in b_text):
+                        venue_status[code]["status"] = "closed"
+                        venue_status[code]["grade"] = grade
+                        venue_status[code]["day_text"] = day_text
+
         deadline_list.sort(key=lambda x: x["deadline"])
     except Exception:
         pass
@@ -345,25 +350,24 @@ def fetch_beforeinfo(jcd: str, rno: int, hd: str):
         return None, f"直前情報取得エラー: {str(e)}"
 
 # ----------------------------------------------------
-# Gemini AI 予想エンジン (gemini-3.6-flash)
+# Gemini AI 予想ロジック (gemini-3.6-flash)
 # ----------------------------------------------------
 def analyze_with_gemini(api_key: str, venue_name: str, rno: int, racelist_data: str, before_data: str, focus_type: str):
     client = genai.Client(api_key=api_key)
     prompt = f"""
-あなたは回収率を最大化する競艇専門のデータサイエンティスト兼プロ予想AIです。
-以下の出走表、直前情報（展示タイム・スタート展示進入・気象風速・チルト）を徹底的に論理分析し、
-ユーザーが指定した【{focus_type}】に最適な【三連単フォーメーション】を算出してください。
+あなたは競艇の回収率最大化を追求するプロ予想AIです。
+以下の出走表、直前情報（展示タイム・スタート展示進入・気象風速・チルト）を徹底分析し、
+指定スタンス【{focus_type}】に最適な【三連単フォーメーション】を算出してください。
 
 ### 対象レース
-- 開催場: ボートレース{venue_name}
-- レース: 第{rno}レース
-- 狙い方スタンス: {focus_type}
+- 開催場: ボートレース{venue_name} 第{rno}R
+- スタンス: {focus_type}
 
 ### 取得データ
 【出走表】:
 {racelist_data}
 
-【直前情報・水面気象・展示】:
+【直前情報（展示・気象）】:
 {before_data}
 
 ---
@@ -380,11 +384,11 @@ def analyze_with_gemini(api_key: str, venue_name: str, rno: int, racelist_data: 
 
 ### 【本線フォーメーション】（4〜8点）
 - 買い目: `1 - 2,3 - 2,3,4`
-- 推奨資金配分比率（合計100%になるように配分）
+- 推奨資金配分比率（合計100%）
 
 ### 【抑え / 穴狙いフォーメーション】（2〜4点）
 - 買い目: `3 - 1,4 - 1,4,5`
-- 狙う展開トリガー
+- 狙う理由
 
 ## 4. 💡 勝負の決め手
 """
@@ -400,7 +404,7 @@ def analyze_with_gemini(api_key: str, venue_name: str, rno: int, racelist_data: 
 if "active_tab" not in st.session_state:
     st.session_state.active_tab = "開催一覧"
 if "selected_jcd" not in st.session_state:
-    st.session_state.selected_jcd = "12"
+    st.session_state.selected_jcd = "12"  # 住之江
 if "selected_rno" not in st.session_state:
     st.session_state.selected_rno = 11
 if "racelist_data" not in st.session_state:
@@ -413,12 +417,12 @@ if "prediction_result" not in st.session_state:
 api_key = st.secrets.get("GEMINI_API_KEY", os.environ.get("GEMINI_API_KEY", ""))
 
 # ----------------------------------------------------
-# ヘッダー & ナビゲーション
+# 公式ヘッダー
 # ----------------------------------------------------
 st.markdown("""
-<div class="top-blue-bar">
-    <div class="top-title">🚤 BOAT RACE <span style="font-size:1.1rem; font-weight:normal; margin-left:6px;">トップ</span></div>
-    <div class="top-icons">
+<div class="br-top-bar">
+    <div class="br-logo-title">🚤 BOAT RACE <span style="font-size:1.05rem; font-weight:normal; margin-left:4px;">トップ</span></div>
+    <div class="br-sub-links">
         <span>📍 ピン留め</span>
         <span>💳 入金</span>
         <span>📋 マイページ</span>
@@ -426,8 +430,8 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-# 開催状況データを取得
-venue_status, deadline_list = fetch_all_venues_status_robust(today_jst_str)
+# 開催状況データを取得（日本時間）
+venue_status, deadline_list = fetch_all_venues_status_perfect(today_jst_str)
 
 # ナビゲーションタブ
 c_nav1, c_nav2, c_nav3 = st.columns([1, 1, 1.2])
@@ -456,13 +460,14 @@ if st.session_state.active_tab == "開催一覧":
         
         # 1. 開催中 (蒲郡・住之江・下関・若松・大村など)
         if stat.get("status") == "active":
-            header_cls = "card-omura-header" if code == "24" else "card-night-header"
+            box_cls = "card-omura-box" if code == "24" else "card-night-box"
+            head_cls = "card-omura-head" if code == "24" else "card-night-head"
             icon = "🌟 " if code == "24" else ("🌙 " if v["type"] == "ナイター" else "")
-            badge = f'<span class="g-badge">{stat["grade"]}</span>' if stat.get("grade") else ""
+            badge = f'<span class="badge-g3">{stat["grade"]}</span>' if stat.get("grade") else ""
             
             card_html = f"""
-            <div class="card-night">
-                <div class="{header_cls}">
+            <div class="{box_cls}">
+                <div class="{head_cls}">
                     {badge}{icon}{v['name']}
                 </div>
                 <div style="text-align:center; padding:3px 2px; background:white;">
@@ -478,12 +483,12 @@ if st.session_state.active_tab == "開催一覧":
                 st.session_state.active_tab = "AI予想"
                 st.rerun()
 
-        # 2. 発売終了 (多摩川・浜名湖・常滑・尼崎・児島・徳山・芦屋など)
+        # 2. 発売終了 (多摩川・浜名湖・常滑・尼崎・徳山・児島・芦屋など)
         elif stat.get("status") == "closed":
-            badge = f'<span class="g-badge">{stat["grade"]}</span>' if stat.get("grade") else ""
+            badge = f'<span class="badge-g3">{stat["grade"]}</span>' if stat.get("grade") else ""
             card_html = f"""
-            <div class="card-closed">
-                <div class="card-closed-header">
+            <div class="card-closed-box">
+                <div class="card-closed-head">
                     {badge}{v['name']} {stat['day_text']}
                 </div>
                 <div class="card-closed-body">
@@ -498,7 +503,7 @@ if st.session_state.active_tab == "開催一覧":
         # 3. 非開催 (--)
         else:
             card_html = f"""
-            <div class="card-none">
+            <div class="card-none-box">
                 <div>{v['name']}</div>
                 <div style="margin-top:2px;">--</div>
             </div>
@@ -514,20 +519,20 @@ elif st.session_state.active_tab == "締切順":
     if deadline_list:
         for idx, item in enumerate(deadline_list):
             is_first = (idx == 0)
-            urgent_cls = "dl-item-urgent" if is_first else ""
+            urgent_cls = "dl-row-urgent" if is_first else ""
             left_bg = "background: linear-gradient(180deg, #38bdf8 0%, #0284c7 100%); color:white;" if item["jcd"] == "24" else "background: #c7d2fe; color:#1e1b4b;"
-            badge_html = f'<span class="g-badge">{item["grade"]}</span>' if item.get("grade") else ""
+            badge_html = f'<span class="badge-g3">{item["grade"]}</span>' if item.get("grade") else ""
             
             c_card, c_btn = st.columns([3.5, 1])
             with c_card:
                 st.markdown(f"""
-                <div class="dl-item {urgent_cls}">
-                    <div class="dl-col-left" style="{left_bg}">
+                <div class="dl-row {urgent_cls}">
+                    <div class="dl-left-part" style="{left_bg}">
                         <div>{badge_html}{item['name']} 🌙</div>
                         <div style="font-size:0.75rem; font-weight:normal;">{item['day_text']}</div>
                     </div>
-                    <div class="dl-col-right">
-                        <div style="font-weight:900; font-size:1rem; color:#0f172a;">{item['rno']}R {item['race_name']}</div>
+                    <div class="dl-right-part">
+                        <div style="font-weight:900; font-size:0.98rem; color:#0f172a;">{item['rno']}R {item['race_name']}</div>
                         <div style="font-weight:900; color:#dc2626; font-size:0.9rem;">締切予定時刻 {item['deadline']}</div>
                     </div>
                 </div>
@@ -539,7 +544,7 @@ elif st.session_state.active_tab == "締切順":
                     st.session_state.active_tab = "AI予想"
                     st.rerun()
     else:
-        st.info("現在受付中のレースはありません（全レース終了または非開催）。")
+        st.info("現在受付中のレースはありません。")
 
 # ----------------------------------------------------
 # 画面3: AIフォーメーション予想
@@ -548,9 +553,9 @@ elif st.session_state.active_tab == "AI予想":
     curr_v = next((v for v in VENUES if v["code"] == st.session_state.selected_jcd), VENUES[0])
     
     st.markdown(f"""
-    <div style="background:#0066cc; color:white; padding:10px 14px; border-radius:6px; font-weight:bold; margin-bottom:12px; display:flex; justify-content:space-between; align-items:center;">
-        <span style="font-size:1.15rem;">📍 ボートレース{curr_v['name']} 【第{st.session_state.selected_rno}R】</span>
-        <span style="font-size:0.9rem;">{today_jst_str}</span>
+    <div style="background:#0066cc; color:white; padding:10px 12px; border-radius:6px; font-weight:bold; margin-bottom:12px; display:flex; justify-content:space-between; align-items:center;">
+        <span style="font-size:1.1rem;">📍 ボートレース{curr_v['name']} 【第{st.session_state.selected_rno}R】</span>
+        <span style="font-size:0.85rem;">{today_jst_str}</span>
     </div>
     """, unsafe_allow_html=True)
 
@@ -571,7 +576,7 @@ elif st.session_state.active_tab == "AI予想":
                 st.success("データ取得完了！")
 
     with c_btn2:
-        if st.button("🔥 AIフォーメーション予想を実行", type="primary", use_container_width=True):
+        if st.button("🔥 AI予想を実行", type="primary", use_container_width=True):
             if not api_key:
                 st.error("Gemini APIキーを設定してください。")
             else:
