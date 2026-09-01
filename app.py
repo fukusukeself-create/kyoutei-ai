@@ -43,7 +43,7 @@ def analyze_race_with_gemini(stadium, race_no, race_data, api_key):
 }}
 """
     response = client.models.generate_content(
-        model="gemini-2.5-flash",
+        model="gemini-3.7-flash",
         contents=prompt,
         config=types.GenerateContentConfig(
             response_mime_type="application/json",
