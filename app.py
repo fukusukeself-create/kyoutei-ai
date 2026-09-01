@@ -1,6 +1,7 @@
 import os
 import json
 import time
+import re
 from datetime import datetime, timezone, timedelta
 import streamlit as st
 from google import genai
@@ -18,7 +19,7 @@ st.set_page_config(
 JST = timezone(timedelta(hours=9))
 now_jst = datetime.now(JST)
 
-# 1. APIキー取得（Secrets または 環境変数優先）
+# 1. APIキー取得
 GEMINI_API_KEY = ""
 if "GEMINI_API_KEY" in st.secrets:
     GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
@@ -145,7 +146,7 @@ def calculate_dynamic_schedule():
 
 dynamic_stadiums, dynamic_timeline = calculate_dynamic_schedule()
 
-# AI予想関数（安全な多段フォールバック）
+# 4. 高信頼性 AI 予想関数（gemini-2.0-flash 安定稼働）
 def analyze_with_ai(stadium, race_no, race_data, api_key):
     client = genai.Client(api_key=api_key)
     prompt = f"""
@@ -158,7 +159,7 @@ def analyze_with_ai(stadium, race_no, race_data, api_key):
 ・フォーメーションは必ず「数字昇順」（例: 1-23-2345 のように各桁の数字を小さい順）で記述すること。
 ・本命（4〜8点目安）、抑え（2〜6点目安）、穴（6〜12点目安）のフォーメーション文字列を出力すること。
 
-以下のJSON形式でのみ回答してください:
+以下のJSONフォーマットのみを出力してください:
 {{
   "summary": "スリット隊形と1マーク攻防の具体的予測",
   "confidence": 85,
@@ -169,21 +170,33 @@ def analyze_with_ai(stadium, race_no, race_data, api_key):
   "reason": "買い目の根拠"
 }}
 """
-    # 安定稼働するFlashモデル一覧
-    models = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
+    # 安定・高速・高精度なモデル順
+    models = ["gemini-2.0-flash", "gemini-2.0-flash-lite"]
     last_err = None
+
     for m in models:
-        try:
-            res = client.models.generate_content(
-                model=m,
-                contents=prompt,
-                config=types.GenerateContentConfig(response_mime_type="application/json", temperature=0.2)
-            )
-            return json.loads(res.text), m
-        except Exception as e:
-            last_err = e
-            time.sleep(0.5)
-            continue
+        for attempt in range(2):
+            try:
+                res = client.models.generate_content(
+                    model=m,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                        temperature=0.2
+                    )
+                )
+                # JSON安全抽出
+                text = res.text.strip()
+                if "```json" in text:
+                    text = text.split("```json")[1].split("```")[0].strip()
+                elif "```" in text:
+                    text = text.split("```")[1].split("```")[0].strip()
+                return json.loads(text), m
+            except Exception as e:
+                last_err = e
+                time.sleep(1)
+                continue
+
     raise Exception(f"AI解析エラー: {last_err}")
 
 # セッション状態初期化
@@ -200,7 +213,6 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-# 確実・安定な標準タブナビゲーション
 tab1, tab2, tab3 = st.tabs(["🚩 開催一覧", "⏰ 締切順（リアルタイム）", "🎯 レース詳細・AI分析"])
 
 # ----------------- TAB 1: 開催一覧 -----------------
@@ -212,7 +224,6 @@ with tab1:
             is_night = "🌙 " if item.get("type") == "night" else ""
             grade_b = f"[{item['grade']}] " if item.get("grade") else ""
             
-            # 開催中の場
             if item.get("is_racing"):
                 btn_label = f"{is_night}{item['name']}\n{grade_b}{item.get('display_status')}\n{item.get('r_text')}"
                 if st.button(btn_label, key=f"std_btn_{item['id']}", use_container_width=True, type="primary"):
@@ -220,7 +231,6 @@ with tab1:
                     st.session_state["selected_race"] = item.get("current_round", 1)
                     st.toast(f"{item['name']} を選択しました！「🎯 レース詳細・AI分析」タブを開いてください。")
             else:
-                # 終了 / 開催なし（薄グレー表示で文字は濃いグレー）
                 st.markdown(f"""
                 <div style="background-color:#f1f5f9; border:1px solid #cbd5e1; border-radius:6px; padding:8px; text-align:center; margin-bottom:8px;">
                     <div style="font-weight:bold; color:#64748b; font-size:14px;">{is_night}{item['name']}</div>
@@ -290,7 +300,6 @@ with tab3:
 
     st.markdown("##### 📋 出走表・展示気配・単勝オッズ")
     
-    # 艇番カラー定義（ヘッダーのみ色付け、中身は白背景に黒文字）
     header_styles = [
         {"bg": "#f8fafc", "text": "#0f172a", "border": "#94a3b8"},  # 1号艇
         {"bg": "#1e293b", "text": "#ffffff", "border": "#0f172a"},  # 2号艇
@@ -324,6 +333,7 @@ with tab3:
 
     st.write("")
     
+    # 予想実行ボタン
     if st.button(f"🚀 {cur_stadium} {cur_race}R フォーメーション予想を算出", use_container_width=True, type="primary"):
         if not GEMINI_API_KEY:
             st.error("左側メニューまたはSecretsで Gemini API Key を設定してください。")
@@ -331,7 +341,7 @@ with tab3:
             with st.spinner("AIが展示タイム・スリット展開を分析中..."):
                 try:
                     res, used_model = analyze_with_ai(cur_stadium, cur_race, race_info, GEMINI_API_KEY)
-                    st.success(f"✅ 解析完了（Engine: {used_model}）")
+                    st.success(f"✅ 解析完了（AI Engine: {used_model}）")
                     
                     # 展開予測
                     st.markdown(f"""
