@@ -18,16 +18,13 @@ st.set_page_config(
 JST = timezone(timedelta(hours=9))
 now_jst = datetime.now(JST)
 
-# コントラスト強化CSS（白飛び・透過を完全に防止）
+# コントラスト強化CSS（白飛び・ダークモード対策）
 st.markdown("""
 <style>
-    /* 全体設定 */
     .stApp {
         background-color: #f0f2f6 !important;
         color: #111111 !important;
     }
-    
-    /* ヘッダー */
     .custom-header {
         background: linear-gradient(90deg, #004b91 0%, #0077c8 100%);
         color: #ffffff !important;
@@ -38,26 +35,9 @@ st.markdown("""
         align-items: center;
         justify-content: space-between;
     }
-    
-    /* テキスト強制視認 */
     p, span, label, div, h1, h2, h3, h4, h5, h6 {
         color: #111111 !important;
     }
-    .text-white { color: #ffffff !important; }
-    .text-red { color: #d32f2f !important; font-weight: bold; }
-    .text-green { color: #2e7d32 !important; font-weight: bold; }
-    .text-orange { color: #e65100 !important; font-weight: bold; }
-
-    /* タイムラインカード */
-    .timeline-card {
-        background-color: #ffffff !important;
-        border: 1.5px solid #d0d7de !important;
-        border-radius: 8px;
-        padding: 12px;
-        margin-bottom: 8px;
-    }
-
-    /* 予想結果カード */
     .result-box {
         background-color: #ffffff !important;
         border-radius: 8px;
@@ -241,9 +221,12 @@ def analyze_with_ai(stadium, race_no, race_data, api_key):
             continue
     raise Exception("一時的にサーバーが混雑しています。数十秒後に再試行してください。")
 
-# セッション状態の初期化
-if "current_view" not in st.session_state:
-    st.session_state["current_view"] = "開催一覧"
+# ナビゲーション選択肢の定義
+VIEW_OPTIONS = ["🚩 開催一覧", "⏰ 締切順（リアルタイム）", "🎯 レース詳細・AI分析"]
+
+# セッション状態の安全な初期化
+if "current_view" not in st.session_state or st.session_state["current_view"] not in VIEW_OPTIONS:
+    st.session_state["current_view"] = VIEW_OPTIONS[0]
 if "selected_stadium" not in st.session_state:
     st.session_state["selected_stadium"] = "住之江"
 if "selected_race" not in st.session_state:
@@ -259,18 +242,19 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-# 画面切り替えタブ
+# 画面切り替えラジオボタン（エラー完全防止インデックス）
+current_index = VIEW_OPTIONS.index(st.session_state["current_view"]) if st.session_state["current_view"] in VIEW_OPTIONS else 0
 view_mode = st.radio(
     "メニュー",
-    ["🚩 開催一覧", "⏰ 締切順（リアルタイム）", "🎯 レース詳細・AI分析"],
-    index=["🚩 開催一覧", "⏰ 締切順（リアルタイム）", "🎯 レース詳細・AI分析"].index(st.session_state["current_view"]),
+    VIEW_OPTIONS,
+    index=current_index,
     horizontal=True,
     label_visibility="collapsed"
 )
 st.session_state["current_view"] = view_mode
 
 # ----------------- 画面1: 開催一覧 -----------------
-if st.session_state["current_view"] == "🚩 開催一覧":
+if st.session_state["current_view"] == VIEW_OPTIONS[0]:
     st.markdown("#### 🚩 本日の開催場（タップして予想画面を開く）")
     cols = st.columns(4)
     for idx, item in enumerate(dynamic_stadiums):
@@ -278,21 +262,19 @@ if st.session_state["current_view"] == "🚩 開催一覧":
             is_night = "🌙 " if item.get("type") == "night" else ""
             grade_b = f"[{item['grade']}] " if item.get("grade") else ""
             
-            # ボタンラベルの作成
             btn_label = f"{is_night}{item['name']}\n{grade_b}{item.get('display_status')}\n{item.get('r_text')}"
             
-            # 開催中のみ強調
             if item.get("is_racing"):
                 if st.button(btn_label, key=f"std_btn_{item['id']}", use_container_width=True, type="primary"):
                     st.session_state["selected_stadium"] = item["name"]
                     st.session_state["selected_race"] = item.get("current_round", 1)
-                    st.session_state["current_view"] = "🎯 レース詳細・AI分析"
+                    st.session_state["current_view"] = VIEW_OPTIONS[2]
                     st.rerun()
             else:
                 st.button(btn_label, key=f"std_btn_{item['id']}", use_container_width=True, disabled=True)
 
 # ----------------- 画面2: 締切順 -----------------
-elif st.session_state["current_view"] == "⏰ 締切順（リアルタイム）":
+elif st.session_state["current_view"] == VIEW_OPTIONS[1]:
     st.markdown("#### ⏰ まもなく締切のレース（締切順）")
     if not dynamic_timeline:
         st.info("本日の全レース発売が終了しました。")
@@ -312,12 +294,12 @@ elif st.session_state["current_view"] == "⏰ 締切順（リアルタイム）"
                     if st.button("予想を見る ➔", key=f"time_btn_{r['stadium']}_{r['round']}", use_container_width=True, type="primary"):
                         st.session_state["selected_stadium"] = r["stadium"]
                         st.session_state["selected_race"] = r["round"]
-                        st.session_state["current_view"] = "🎯 レース詳細・AI分析"
+                        st.session_state["current_view"] = VIEW_OPTIONS[2]
                         st.rerun()
                 st.divider()
 
 # ----------------- 画面3: レース詳細・AI分析 -----------------
-elif st.session_state["current_view"] == "🎯 レース詳細・AI分析":
+elif st.session_state["current_view"] == VIEW_OPTIONS[2]:
     active_names = [s["name"] for s in dynamic_stadiums if s.get("is_racing")]
     if not active_names:
         active_names = ["住之江", "下関", "蒲郡", "若松", "大村"]
@@ -327,7 +309,7 @@ elif st.session_state["current_view"] == "🎯 レース詳細・AI分析":
         cur_idx = active_names.index(st.session_state["selected_stadium"]) if st.session_state["selected_stadium"] in active_names else 0
         cur_stadium = st.selectbox("競艇場", active_names, index=cur_idx)
     with col_sel2:
-        cur_race = st.slider("レース番号", 1, 12, value=st.session_state["selected_race"])
+        cur_race = st.slider("レース番号", 1, 12, value=int(st.session_state.get("selected_race", 8)))
 
     race_info = {
         "weather": {"weather": "晴", "wind": "北西 3m（追風）", "wave": "2cm", "temp": "26℃"},
@@ -379,7 +361,6 @@ elif st.session_state["current_view"] == "🎯 レース詳細・AI分析":
                     
                     st.success(f"✅ 解析完了（Engine: {used_model}）")
                     
-                    # 展開予測
                     st.markdown(f"""
                     <div style="background:#ffffff; padding:12px; border-radius:8px; border:1px solid #cfd8dc; margin-bottom:12px;">
                         <h4 style="margin:0 0 6px 0;">📊 展開予測</h4>
