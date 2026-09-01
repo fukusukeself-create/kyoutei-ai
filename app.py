@@ -353,9 +353,11 @@ def fetch_beforeinfo(jcd: str, rno: int, hd: str):
         return None, f"直前情報取得エラー: {str(e)}"
 
 # ----------------------------------------------------
-# Gemini AI 予想エンジン (gemini-3.7-flash)
+# Gemini AI 予想エンジン (gemini-3.6-flash)
 # ----------------------------------------------------
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.7-flash")
+# gemini-3.7-flash は無料枠が 20リクエスト/日 と狭いため既定にしない。
+# 従量課金を有効にした場合は環境変数 GEMINI_MODEL で切り替えられる。
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
 
 
 def analyze_with_gemini(api_key: str, venue_name: str, rno: int, racelist_data: str, before_data: str, focus_type: str):
