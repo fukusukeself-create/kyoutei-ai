@@ -5,104 +5,95 @@ import datetime
 import os
 import re
 from google import genai
-from google.genai import types
 
 # ----------------------------------------------------
 # ページ基本設定
 # ----------------------------------------------------
 st.set_page_config(
-    page_title="BOAT RACE AI 予想",
+    page_title="BOAT RACE AI フォーメーション予想",
     page_icon="🚤",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
 
 # ----------------------------------------------------
-# 公式ライクなカスタムCSS & 艇番カラー定義
+# 公式ライクなカスタムCSS
 # ----------------------------------------------------
 st.markdown("""
 <style>
-    /* 全体フォント・ベーススタイル */
     .stApp {
-        background-color: #f4f6f9;
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        background-color: #f1f5f9;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
     }
-    
-    /* ヘッダーバー */
     .app-header {
-        background: linear-gradient(135deg, #0b3c5d 0%, #1d2731 100%);
+        background: linear-gradient(135deg, #0f172a 0%, #1e3a8a 100%);
         color: #ffffff;
-        padding: 12px 16px;
-        border-radius: 10px;
+        padding: 12px;
+        border-radius: 8px;
         text-align: center;
         font-weight: 800;
         font-size: 1.25rem;
-        letter-spacing: 0.05em;
         margin-bottom: 12px;
-        box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
     }
     
-    /* 艇番バッジ（公式カラー規格） */
-    .boat-badge {
-        display: inline-block;
-        width: 26px;
-        height: 26px;
-        line-height: 24px;
-        text-align: center;
-        font-weight: 900;
-        border-radius: 4px;
-        margin: 0 2px;
-        font-size: 0.95rem;
-    }
-    .b-1 { background-color: #ffffff; color: #000000; border: 1.5px solid #000000; }
-    .b-2 { background-color: #000000; color: #ffffff; border: 1.5px solid #000000; }
-    .b-3 { background-color: #e53935; color: #ffffff; border: 1.5px solid #b71c1c; }
-    .b-4 { background-color: #1e88e5; color: #ffffff; border: 1.5px solid #0d47a1; }
-    .b-5 { background-color: #fdd835; color: #000000; border: 1.5px solid #fbc02d; }
-    .b-6 { background-color: #43a047; color: #ffffff; border: 1.5px solid #1b5e20; }
-
-    /* レース情報サマリーカード */
-    .race-summary-card {
-        background-color: #ffffff;
-        border: 1px solid #dce2e6;
-        border-left: 6px solid #0b3c5d;
+    /* 開催ステータスカード */
+    .venue-card-active {
+        background: #ffffff;
+        border: 2px solid #2563eb;
         border-radius: 8px;
-        padding: 12px 16px;
-        margin-bottom: 12px;
+        padding: 8px 4px;
+        text-align: center;
+        margin-bottom: 8px;
+    }
+    .venue-card-night {
+        background: #eff6ff;
+        border: 2px solid #818cf8;
+        border-radius: 8px;
+        padding: 8px 4px;
+        text-align: center;
+        margin-bottom: 8px;
+    }
+    .venue-card-closed {
+        background: #e2e8f0;
+        border: 1px solid #94a3b8;
+        border-radius: 8px;
+        padding: 8px 4px;
+        text-align: center;
+        color: #64748b;
+        margin-bottom: 8px;
+    }
+    .venue-card-none {
+        background: #f8fafc;
+        border: 1px dashed #cbd5e1;
+        border-radius: 8px;
+        padding: 8px 4px;
+        text-align: center;
+        color: #94a3b8;
+        margin-bottom: 8px;
+    }
+    
+    /* 締切順アイテム */
+    .deadline-card {
+        background: #ffffff;
+        border-left: 6px solid #2563eb;
+        border-radius: 6px;
+        padding: 10px 14px;
+        margin-bottom: 8px;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.08);
         display: flex;
         justify-content: space-between;
         align-items: center;
     }
-
-    /* 買い目カード */
-    .formation-card {
-        background: #ffffff;
-        border-radius: 8px;
-        border: 1px solid #e0e6ed;
-        padding: 14px;
-        margin-bottom: 12px;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.04);
-    }
-    .formation-title {
-        font-weight: bold;
-        font-size: 1.05rem;
-        margin-bottom: 8px;
-        display: flex;
-        align-items: center;
-        gap: 6px;
-    }
-    
-    /* ボタンスタイル調整 */
     .stButton>button {
-        border-radius: 8px;
-        font-weight: 700;
-        height: 42px;
+        border-radius: 6px;
+        font-weight: bold;
     }
 </style>
 """, unsafe_allow_html=True)
 
 # ----------------------------------------------------
-# 定数データ（24場）
+# 24場 定義
 # ----------------------------------------------------
 VENUES = [
     {"code": "01", "name": "桐生", "type": "ナイター"},
@@ -131,30 +122,75 @@ VENUES = [
     {"code": "24", "name": "大村", "type": "ナイター"},
 ]
 
-# ----------------------------------------------------
-# スクレイピング関数
-# ----------------------------------------------------
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 }
 
+# ----------------------------------------------------
+# 全場開催・締切状況の取得スクレイピング
+# ----------------------------------------------------
+@st.cache_data(ttl=60)
+def fetch_all_venues_status(hd: str):
+    """当日の全場開催状況・直前締切一覧を取得"""
+    url = f"https://www.boatrace.jp/owpc/pc/race/index?hd={hd}"
+    venue_status = {v["code"]: {"active": False, "closed": False, "grade": "", "day": "", "next_rno": 1, "deadline": "", "title": ""} for v in VENUES}
+    deadline_list = []
+    
+    try:
+        res = requests.get(url, headers=HEADERS, timeout=10)
+        res.encoding = res.apparent_encoding
+        soup = BeautifulSoup(res.text, "html.parser")
+        
+        tables = soup.find_all("table")
+        for table in tables:
+            rows = table.find_all("tr")
+            for row in rows:
+                text = row.get_text()
+                for v in VENUES:
+                    if v["name"] in text:
+                        code = v["code"]
+                        if "発売終了" in text or "終了" in text:
+                            venue_status[code]["closed"] = True
+                            venue_status[code]["active"] = False
+                        else:
+                            venue_status[code]["active"] = True
+                            # 締切時間・R抽出
+                            time_match = re.search(r"(\d{1,2})R\s*(\d{1,2}:\d{2})", text)
+                            if time_match:
+                                rno = int(time_match.group(1))
+                                dtime = time_match.group(2)
+                                venue_status[code]["next_rno"] = rno
+                                venue_status[code]["deadline"] = dtime
+                                deadline_list.append({
+                                    "jcd": code,
+                                    "name": v["name"],
+                                    "rno": rno,
+                                    "deadline": dtime,
+                                    "type": v["type"]
+                                })
+        deadline_list.sort(key=lambda x: x["deadline"])
+    except Exception:
+        pass
+    
+    return venue_status, deadline_list
+
+# ----------------------------------------------------
+# 出走表 & 直前情報スクレイピング
+# ----------------------------------------------------
 def fetch_racelist(jcd: str, rno: int, hd: str):
     url = f"https://www.boatrace.jp/owpc/pc/race/racelist?rno={rno}&jcd={jcd}&hd={hd}"
     try:
         res = requests.get(url, headers=HEADERS, timeout=10)
         res.encoding = res.apparent_encoding
         soup = BeautifulSoup(res.text, "html.parser")
-        
         table = soup.find("div", class_="table1")
         if not table:
-            return None, "出走表が取得できませんでした（非開催または公開前）。"
-        
+            return None, "出走表が見つかりませんでした。"
         rows = table.find_all("tbody")
         racers = []
         for i, row in enumerate(rows[:6], 1):
             text_data = " ".join(row.get_text().split())
             racers.append(f"【{i}号艇】: {text_data}")
-            
         return "\n".join(racers), None
     except Exception as e:
         return None, f"出走表取得エラー: {str(e)}"
@@ -165,70 +201,62 @@ def fetch_beforeinfo(jcd: str, rno: int, hd: str):
         res = requests.get(url, headers=HEADERS, timeout=10)
         res.encoding = res.apparent_encoding
         soup = BeautifulSoup(res.text, "html.parser")
-        
         weather_box = soup.find("div", class_="weather1")
         weather_text = " ".join(weather_box.get_text().split()) if weather_box else "気象情報なし"
-        
         tables = soup.find_all("div", class_="table1")
         info_text = ""
         for t in tables:
             info_text += "\n" + " ".join(t.get_text().split())
-            
         if not info_text:
             return None, "直前情報がまだ公開されていません。"
-            
         return f"【水面・気象】: {weather_text}\n【直前展示データ】:\n{info_text}", None
     except Exception as e:
         return None, f"直前情報取得エラー: {str(e)}"
 
 # ----------------------------------------------------
-# Gemini AI 予想エンジン
+# Gemini AI 予想エンジン (gemini-3.6-flash)
 # ----------------------------------------------------
 def analyze_with_gemini(api_key: str, venue_name: str, rno: int, racelist_data: str, before_data: str, focus_type: str):
     client = genai.Client(api_key=api_key)
     prompt = f"""
-あなたは回収率を極限まで追求する競艇専門のデータサイエンティスト兼プロ予想AIです。
-提供された出走表、直前情報（展示タイム・スタート展示スリット隊形・風速・波高・チルト・部品交換）を総合的に分析し、
-ユーザーが指定した【{focus_type}】に最適な三連単フォーメーション買い目を算出してください。
+あなたは競艇（ボートレース）の回収率最大化を追求するトッププロ予想AIです。
+以下のレース情報、出走表、直前情報（展示タイム・スタート展示進入・気象・風速）を徹底的に論理分析し、
+ユーザーが指定したスタンス【{focus_type}】に最適な【三連単フォーメーション】を算出してください。
 
 ### 対象レース
 - 開催場: ボートレース{venue_name}
 - レース: 第{rno}レース
-- 狙い方スタンス: {focus_type}
+- スタンス: {focus_type}
 
-### レースデータ
-【出走表】:
+### 取得データ
+【出走表・選手データ】:
 {racelist_data}
 
-【直前情報（展示・気象）】:
+【直前情報・水面気象・展示】:
 {before_data}
 
 ---
-### 出力フォーマット（Markdown形式）
+### 分析フォーマット（Markdown出力）
 
-## 1. 隊形 & 1マーク展開シミュレーション
-- **スリット進入隊形予想**: （例: 123/456、チルトやピット離れ考慮）
-- **イン逃げ信頼度**: 【S / A / B / C】（理由を簡潔に）
-- **仕掛け艇・波乱要因**: まくり/まくり差しの展開トリガー
+## 1. 進入隊形予想 & 1マーク展開シミュレーション
+- スリット進入予想（例: 123/456）とイン逃げ信頼度（S/A/B/C）
+- まくり・まくり差しなど攻め手の艇と展開シナリオ
 
-## 2. 展示タイム・機力評価
-- 各艇の足色（出足・伸び足・回り足）のハイライト
+## 2. 機力 & 直前気象評価
+- 展示タイム・スタート展示・チルト・風速（向かい風/追い風/波高）から導く有利不利
 
 ## 3. 🎯 厳選 三連単フォーメーション買い目
 
-### 【本線・主力フォーメーション】（4〜8点）
-- **買い目構成**: `1 - 2,3 - 2,3,4` （フォーメーション形式）
-- **推奨資金配分比率**:
-  - `1-2-3`: 35%
-  - `1-2-4`: 25%
-  - `1-3-2`: 25%
-  - `1-3-4`: 15%
+### 【本線フォーメーション】（4〜8点）
+- 買い目: `1 - 2,3 - 2,3,4`
+- 推奨資金配分比率（合計100%になるようにパーセント指定）
 
-### 【高回収・抑えフォーメーション】（2〜4点）
-- **買い目構成**: `3 - 1,4 - 1,4,5`
-- **狙い目根拠**: 展開が崩れた場合のシナリオ
+### 【抑え / 穴狙いフォーメーション】（2〜4点）
+- 買い目: `3 - 1,4 - 1,4,5`
+- 狙う展開トリガー
 
-## 4. 💡 勝負の決め手（ワンポイント）
+## 4. 💡 勝負の決め手
+- レースの最終結論
 """
     response = client.models.generate_content(
         model="gemini-3.6-flash",
@@ -237,22 +265,15 @@ def analyze_with_gemini(api_key: str, venue_name: str, rno: int, racelist_data: 
     return response.text
 
 # ----------------------------------------------------
-# ヘッダー & APIキー管理
+# UI & 状態管理
 # ----------------------------------------------------
 st.markdown('<div class="app-header">🚤 BOAT RACE AI FORMATION PREDICTOR</div>', unsafe_allow_html=True)
 
-api_key = st.secrets.get("GEMINI_API_KEY", os.environ.get("GEMINI_API_KEY", ""))
-if not api_key:
-    with st.expander("🔑 APIキー設定", expanded=True):
-        api_key = st.text_input("Gemini API Key", type="password")
-
-# ----------------------------------------------------
-# メイン画面（タブ構成）
-# ----------------------------------------------------
-tab_select, tab_data, tab_ai = st.tabs(["🏟️ レース選択", "📋 出走・直前データ", "🎯 AIフォーメーション予想"])
-
+# セッション状態の初期化
 if "selected_jcd" not in st.session_state:
-    st.session_state.selected_jcd = "19"  # 下関
+    st.session_state.selected_jcd = "19"
+if "selected_rno" not in st.session_state:
+    st.session_state.selected_rno = 10
 if "racelist_data" not in st.session_state:
     st.session_state.racelist_data = ""
 if "before_data" not in st.session_state:
@@ -260,106 +281,160 @@ if "before_data" not in st.session_state:
 if "prediction_result" not in st.session_state:
     st.session_state.prediction_result = ""
 
-# --- TAB 1: レース選択 ---
-with tab_select:
-    c1, c2, c3 = st.columns([1.2, 1, 1.5])
-    with c1:
-        selected_date = st.date_input("📅 開催日", datetime.date.today())
-        hd_str = selected_date.strftime("%Y%m%d")
-    with c2:
-        selected_rno = st.selectbox("🏁 レース", options=list(range(1, 13)), index=9)
-    with c3:
-        focus_type = st.selectbox(
-            "🎯 予想スタンス",
-            ["バランス（本線＋抑え）", "本命重視（イン逃げ・点数絞り）", "高配当狙い（センター・ダッシュ攻め）"]
-        )
+api_key = st.secrets.get("GEMINI_API_KEY", os.environ.get("GEMINI_API_KEY", ""))
+if not api_key:
+    with st.expander("🔑 Gemini APIキー設定", expanded=False):
+        api_key = st.text_input("API Key を入力", type="password")
 
-    st.write("▼ **開催場を選択**")
-    venue_cols = st.columns(4)
+# 日付・条件選択
+col_d, col_sync = st.columns([2, 1])
+with col_d:
+    selected_date = st.date_input("📅 開催日", datetime.date.today(), label_visibility="collapsed")
+    hd_str = selected_date.strftime("%Y%m%d")
+with col_sync:
+    if st.button("🔄 開催情報更新", use_container_width=True):
+        st.cache_data.clear()
+        st.rerun()
+
+# 開催状況・締切順データの取得
+venue_status, deadline_list = fetch_all_venues_status(hd_str)
+
+# メインタブ
+tab_grid, tab_deadline, tab_ai = st.tabs(["🏁 開催一覧（24場）", "⏰ 締切順一覧", "🎯 AIフォーメーション予想"])
+
+# ----------------------------------------------------
+# TAB 1: 開催一覧（24場 グリッドパネルUI）
+# ----------------------------------------------------
+with tab_grid:
+    st.caption("※タップすると対象場と現在のレースが即座にセットされます。")
+    cols = st.columns(4)
     for idx, v in enumerate(VENUES):
-        col = venue_cols[idx % 4]
-        is_active = (st.session_state.selected_jcd == v["code"])
-        type_icon = "🌙" if v["type"] == "ナイター" else ("🌅" if v["type"] == "モーニング" else "")
-        btn_text = f"{v['name']} {type_icon}"
+        col = cols[idx % 4]
+        code = v["code"]
+        stat = venue_status.get(code, {})
+        is_selected = (st.session_state.selected_jcd == code)
         
-        if col.button(btn_text, key=f"v_{v['code']}", type="primary" if is_active else "secondary", use_container_width=True):
-            st.session_state.selected_jcd = v["code"]
+        # 状態別のテキストとボタンスタイル
+        if stat.get("active"):
+            time_txt = f"{stat['next_rno']}R {stat['deadline']}"
+            night_icon = "🌙" if v["type"] == "ナイター" else ("🌅" if v["type"] == "モーニング" else "")
+            btn_label = f"{v['name']}{night_icon}\n{time_txt}"
+            btn_type = "primary" if is_selected else "secondary"
+        elif stat.get("closed"):
+            btn_label = f"{v['name']}\n[発売終了]"
+            btn_type = "secondary"
+        else:
+            btn_label = f"{v['name']}\n--"
+            btn_type = "secondary"
+            
+        if col.button(btn_label, key=f"grid_{code}", type=btn_type, use_container_width=True):
+            st.session_state.selected_jcd = code
+            if stat.get("next_rno"):
+                st.session_state.selected_rno = stat["next_rno"]
             st.rerun()
 
-    current_venue = next((v for v in VENUES if v["code"] == st.session_state.selected_jcd), VENUES[0])
-    
-    st.markdown(f"""
-    <div class="race-summary-card">
-        <div>
-            <span style="font-size: 1.2rem; font-weight: bold; color: #0b3c5d;">ボートレース{current_venue['name']}</span>
-            <span style="font-size: 1.1rem; font-weight: bold; margin-left: 8px;">第 {selected_rno} レース</span>
-        </div>
-        <div style="color: #64748b; font-weight: bold;">{selected_date.strftime('%Y/%m/%d')}</div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    if st.button("📡 公式データを取得して準備", type="primary", use_container_width=True):
-        with st.spinner("出走表・直前情報を自動取得中..."):
-            r_data, r_err = fetch_racelist(st.session_state.selected_jcd, selected_rno, hd_str)
-            b_data, b_err = fetch_beforeinfo(st.session_state.selected_jcd, selected_rno, hd_str)
-            
-            if r_err:
-                st.error(r_err)
-            else:
-                st.session_state.racelist_data = r_data
-                st.session_state.before_data = b_data or "（直前情報：展示開始前または未公開）"
-                st.success("データの読み込みが完了しました！「AIフォーメーション予想」タブへ進んでください。")
-
-# --- TAB 2: 出走表・直前データプレビュー ---
-with tab_data:
-    current_venue = next((v for v in VENUES if v["code"] == st.session_state.selected_jcd), VENUES[0])
-    st.markdown(f"#### 📋 {current_venue['name']} 第{selected_rno}R 公式データ")
-    
-    if st.session_state.racelist_data:
-        st.markdown("**【出走表・選手一覧】**")
-        st.text_area("", st.session_state.racelist_data, height=180, label_visibility="collapsed")
-        
-        st.markdown("**【直前情報（展示タイム・気象・進入）】**")
-        st.text_area("", st.session_state.before_data, height=140, label_visibility="collapsed")
+# ----------------------------------------------------
+# TAB 2: 締切順一覧（直近レースのタイムテーブル）
+# ----------------------------------------------------
+with tab_deadline:
+    if deadline_list:
+        st.markdown(f"##### ⏰ まもなく締切のレース（{len(deadline_list)}件）")
+        for item in deadline_list:
+            night_badge = "🌙" if item["type"] == "ナイター" else ""
+            c_info, c_btn = st.columns([3, 1])
+            with c_info:
+                st.markdown(f"""
+                <div class="deadline-card">
+                    <div>
+                        <b>{item['name']} {night_badge}</b> <span style="color:#2563eb; font-weight:bold; font-size:1.1rem; margin-left:6px;">{item['rno']}R</span>
+                    </div>
+                    <div style="font-weight:bold; color:#dc2626; font-size:1.05rem;">
+                        締切予定 {item['deadline']}
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+            with c_btn:
+                if st.button("予想へ", key=f"dl_{item['jcd']}_{item['rno']}", use_container_width=True):
+                    st.session_state.selected_jcd = item["jcd"]
+                    st.session_state.selected_rno = item["rno"]
+                    st.rerun()
     else:
-        st.info("「レース選択」タブでデータ取得ボタンを押すか、直接予想を実行してください。")
+        st.info("現在進行中のレース情報がありません（非開催または全レース終了）。")
 
-# --- TAB 3: AIフォーメーション予想 ---
+# ----------------------------------------------------
+# 選択中レース表示 & AI予想実行セクション
+# ----------------------------------------------------
+current_venue = next((v for v in VENUES if v["code"] == st.session_state.selected_jcd), VENUES[0])
+
+st.markdown("---")
+col_s1, col_s2, col_s3 = st.columns([1.5, 1, 1.5])
+with col_s1:
+    st.markdown(f"📍 **ボートレース{current_venue['name']}**")
+with col_s2:
+    st.session_state.selected_rno = st.selectbox(
+        "レース番号",
+        options=list(range(1, 13)),
+        index=st.session_state.selected_rno - 1,
+        label_visibility="collapsed"
+    )
+with col_s3:
+    focus_type = st.selectbox(
+        "スタンス",
+        ["バランス（本線＋抑え）", "本命重視（イン逃げ・点数絞り）", "高配当狙い（センター・まくり）"],
+        label_visibility="collapsed"
+    )
+
+# 予想タブ
 with tab_ai:
-    current_venue = next((v for v in VENUES if v["code"] == st.session_state.selected_jcd), VENUES[0])
+    st.markdown(f"#### 🎯 {current_venue['name']} 第{st.session_state.selected_rno}R フォーメーションAI予想")
     
-    st.markdown(f"""
-    <div style="background: #ffffff; padding: 10px 14px; border-radius: 8px; margin-bottom: 12px; border: 1px solid #e2e8f0;">
-        <b>対象:</b> {current_venue['name']} 第{selected_rno}R ／ <b>スタンス:</b> {focus_type}
-    </div>
-    """, unsafe_allow_html=True)
-    
-    if st.button("🔥 三連単フォーメーションをAI解析", type="primary", use_container_width=True):
-        if not api_key:
-            st.error("Gemini APIキーを設定してください。")
-        else:
-            # データ未取得の場合は自動取得
-            if not st.session_state.racelist_data:
-                with st.spinner("レースデータを取得中..."):
-                    r_data, _ = fetch_racelist(st.session_state.selected_jcd, selected_rno, hd_str)
-                    b_data, _ = fetch_beforeinfo(st.session_state.selected_jcd, selected_rno, hd_str)
-                    st.session_state.racelist_data = r_data or "出走表データ取得失敗"
-                    st.session_state.before_data = b_data or "直前情報なし"
+    col_act1, col_act2 = st.columns([1, 1])
+    with col_act1:
+        if st.button("📡 公式データを取得", use_container_width=True):
+            with st.spinner("出走表・展示情報を取得中..."):
+                r_data, r_err = fetch_racelist(st.session_state.selected_jcd, st.session_state.selected_rno, hd_str)
+                b_data, b_err = fetch_beforeinfo(st.session_state.selected_jcd, st.session_state.selected_rno, hd_str)
+                
+                if r_err:
+                    st.error(r_err)
+                else:
+                    st.session_state.racelist_data = r_data
+                    st.session_state.before_data = b_data or "（直前情報なし：展示開始前）"
+                    st.success("データ取得完了！")
 
-            with st.spinner("🤖 Geminiが展開・展示・機力をシミュレーション中..."):
-                try:
-                    result = analyze_with_gemini(
-                        api_key=api_key,
-                        venue_name=current_venue["name"],
-                        rno=selected_rno,
-                        racelist_data=st.session_state.racelist_data,
-                        before_data=st.session_state.before_data,
-                        focus_type=focus_type
-                    )
-                    st.session_state.prediction_result = result
-                except Exception as e:
-                    st.error(f"予想生成エラー: {str(e)}")
+    with col_act2:
+        if st.button("🔥 AI予想を実行", type="primary", use_container_width=True):
+            if not api_key:
+                st.error("Gemini APIキーを設定してください。")
+            else:
+                if not st.session_state.racelist_data:
+                    with st.spinner("レースデータを取得中..."):
+                        r_data, _ = fetch_racelist(st.session_state.selected_jcd, st.session_state.selected_rno, hd_str)
+                        b_data, _ = fetch_beforeinfo(st.session_state.selected_jcd, st.session_state.selected_rno, hd_str)
+                        st.session_state.racelist_data = r_data or "出走表データ取得失敗"
+                        st.session_state.before_data = b_data or "直前情報なし"
 
+                with st.spinner("🤖 Gemini 3.6 Flash が展開・展示・機力をシミュレーション中..."):
+                    try:
+                        res = analyze_with_gemini(
+                            api_key=api_key,
+                            venue_name=current_venue["name"],
+                            rno=st.session_state.selected_rno,
+                            racelist_data=st.session_state.racelist_data,
+                            before_data=st.session_state.before_data,
+                            focus_type=focus_type
+                        )
+                        st.session_state.prediction_result = res
+                    except Exception as e:
+                        st.error(f"予想生成エラー: {str(e)}")
+
+    # 取得データ確認用
+    if st.session_state.racelist_data:
+        with st.expander("📋 取得済みデータ（出走表・直前展示）", expanded=False):
+            st.text_area("出走表", st.session_state.racelist_data, height=100)
+            st.text_area("直前情報・気象", st.session_state.before_data, height=100)
+
+    # 予想結果の表示
     if st.session_state.prediction_result:
         st.markdown("---")
         st.markdown(st.session_state.prediction_result)
