@@ -7,7 +7,7 @@ import re
 from google import genai
 
 # ----------------------------------------------------
-# ページ基本設定（モバイル・Pixel Fold最適化）
+# ページ基本設定
 # ----------------------------------------------------
 st.set_page_config(
     page_title="BOAT RACE",
@@ -28,13 +28,12 @@ today_jst_str = now_jst.strftime("%Y%m%d")
 # ----------------------------------------------------
 st.markdown("""
 <style>
-    /* 全体背景 */
     .stApp {
         background-color: #f1f3f7;
         font-family: -apple-system, BlinkMacSystemFont, "Hiragino Kaku Gothic ProN", Meiryo, sans-serif;
     }
     .block-container {
-        padding: 0.3rem 0.3rem 2rem 0.3rem !important;
+        padding: 0.2rem 0.3rem 2rem 0.3rem !important;
         max-width: 100% !important;
     }
 
@@ -42,25 +41,25 @@ st.markdown("""
     .br-top-bar {
         background: #0066cc;
         color: white;
-        padding: 8px 10px;
+        padding: 8px 12px;
         display: flex;
         justify-content: space-between;
         align-items: center;
         border-radius: 4px;
-        margin-bottom: 2px;
+        margin-bottom: 4px;
     }
     .br-logo-title {
-        font-size: 1.25rem;
+        font-size: 1.2rem;
         font-weight: 900;
         display: flex;
         align-items: center;
         gap: 6px;
     }
     .br-sub-links {
-        font-size: 0.72rem;
+        font-size: 0.75rem;
         font-weight: bold;
         display: flex;
-        gap: 8px;
+        gap: 10px;
     }
 
     /* 開催中カード: ナイター (蒲郡・住之江・下関・若松) */
@@ -103,7 +102,7 @@ st.markdown("""
     /* 発売終了カード (多摩川・浜名湖・常滑・尼崎・徳山など) */
     .card-closed-box {
         border-radius: 6px;
-        border: 1px solid #94a3b8;
+        border: 1.5px solid #94a3b8;
         overflow: hidden;
         background: #ffffff;
         margin-bottom: 4px;
@@ -222,10 +221,9 @@ HEADERS = {
 }
 
 # ----------------------------------------------------
-# 堅牢な公式スクレイピング（個別パース）
+# 各場 独立パーススクレイピング（混同を完全排除）
 # ----------------------------------------------------
-@st.cache_data(ttl=15)
-def fetch_all_venues_status_perfect(hd: str):
+def fetch_all_venues_status_safe(hd: str):
     url = f"https://www.boatrace.jp/owpc/pc/race/index?hd={hd}"
     venue_status = {}
     for v in VENUES:
@@ -246,69 +244,70 @@ def fetch_all_venues_status_perfect(hd: str):
         res.encoding = res.apparent_encoding
         soup = BeautifulSoup(res.text, "html.parser")
         
-        # table, tbody, div.table1 の中から各場を探索
-        blocks = soup.find_all(["tbody", "table", "div"], class_=re.compile(r"table1|unit|race"))
-        if not blocks:
-            blocks = soup.find_all("table")
+        # リンク `jcd=XX` を起点に、そのリンクが属する最小単位の行(tr)のみを取得
+        links = soup.find_all("a", href=re.compile(r"jcd=(\d{2})"))
+        
+        for link in links:
+            m = re.search(r"jcd=(\d{2})", link.get("href", ""))
+            if not m:
+                continue
+            jcd = m.group(1)
+            if jcd not in venue_status:
+                continue
 
-        for block in blocks:
-            b_text = " ".join(block.get_text().split())
-            for v in VENUES:
-                code = v["code"]
-                name = v["name"]
-                
-                # ブロック内に場名または jcd=XX があるか確認
-                if (name in b_text) or (f"jcd={code}" in str(block)):
-                    # すでに active になっていれば上書きしない
-                    if venue_status[code]["status"] == "active":
-                        continue
+            # リンクの親要素（行 tr または コンテナ div）を1つだけ特定
+            parent_row = link.find_parent("tr")
+            if not parent_row:
+                parent_row = link.find_parent("div")
+            if not parent_row:
+                continue
 
-                    # グレード抽出
-                    grade = ""
-                    if "SG" in b_text: grade = "SG"
-                    elif "G1" in b_text or "GI" in b_text: grade = "G1"
-                    elif "G2" in b_text or "GII" in b_text: grade = "G2"
-                    elif "G3" in b_text or "GIII" in b_text: grade = "G3"
+            row_text = " ".join(parent_row.get_text().split())
 
-                    # 日程抽出 (例: 3日目, 最終日, 初日)
-                    day_m = re.search(r"(初日|\d+日目|最終日)", b_text)
-                    day_text = day_m.group(1) if day_m else "一般"
+            # グレード
+            grade = ""
+            if "SG" in row_text: grade = "SG"
+            elif "G1" in row_text or "GI" in row_text: grade = "G1"
+            elif "G2" in row_text or "GII" in row_text: grade = "G2"
+            elif "G3" in row_text or "GIII" in row_text: grade = "G3"
 
-                    # 締切時刻（例: 20:02, 20:06 等）の存在を探索
-                    times = re.findall(r"(\d{1,2}:\d{2})", b_text)
-                    rnos = re.findall(r"(\d{1,2})R", b_text)
+            # 日程
+            day_m = re.search(r"(初日|\d+日目|最終日)", row_text)
+            day_text = day_m.group(1) if day_m else "一般"
 
-                    if times:
-                        # 時刻が存在する場合は絶対に開催中（active）
-                        dtime = times[0]
-                        rno = int(rnos[0]) if rnos else 11
-                        
-                        rname_m = re.search(rf"{rno}R\s*([^\d\s]{{2,8}})", b_text)
-                        rname = rname_m.group(1) if rname_m else "予選"
+            # 締切時刻 (例: 20:02)
+            time_matches = re.findall(r"(\d{1,2}:\d{2})", row_text)
+            rno_matches = re.findall(r"(\d{1,2})R", row_text)
 
-                        venue_status[code]["status"] = "active"
-                        venue_status[code]["grade"] = grade
-                        venue_status[code]["day_text"] = day_text
-                        venue_status[code]["next_rno"] = rno
-                        venue_status[code]["deadline"] = dtime
-                        venue_status[code]["race_name"] = rname
+            if time_matches:
+                # 締切時刻が存在すれば「開催中」確定
+                dtime = time_matches[0]
+                rno = int(rno_matches[0]) if rno_matches else 11
+                rname_m = re.search(rf"{rno}R\s*([^\d\s]{{2,8}})", row_text)
+                rname = rname_m.group(1) if rname_m else "予選"
 
-                        # 重複登録防止
-                        if not any(d["jcd"] == code for d in deadline_list):
-                            deadline_list.append({
-                                "jcd": code,
-                                "name": name,
-                                "rno": rno,
-                                "deadline": dtime,
-                                "type": v["type"],
-                                "grade": grade,
-                                "day_text": day_text,
-                                "race_name": rname
-                            })
-                    elif ("発売終了" in b_text) or ("終了" in b_text):
-                        venue_status[code]["status"] = "closed"
-                        venue_status[code]["grade"] = grade
-                        venue_status[code]["day_text"] = day_text
+                venue_status[jcd]["status"] = "active"
+                venue_status[jcd]["grade"] = grade
+                venue_status[jcd]["day_text"] = day_text
+                venue_status[jcd]["next_rno"] = rno
+                venue_status[jcd]["deadline"] = dtime
+                venue_status[jcd]["race_name"] = rname
+
+                if not any(d["jcd"] == jcd for d in deadline_list):
+                    deadline_list.append({
+                        "jcd": jcd,
+                        "name": venue_status[jcd]["name"],
+                        "rno": rno,
+                        "deadline": dtime,
+                        "type": venue_status[jcd]["type"],
+                        "grade": grade,
+                        "day_text": day_text,
+                        "race_name": rname
+                    })
+            elif ("発売終了" in row_text) or ("終了" in row_text):
+                venue_status[jcd]["status"] = "closed"
+                venue_status[jcd]["grade"] = grade
+                venue_status[jcd]["day_text"] = day_text
 
         deadline_list.sort(key=lambda x: x["deadline"])
     except Exception:
@@ -350,7 +349,7 @@ def fetch_beforeinfo(jcd: str, rno: int, hd: str):
         return None, f"直前情報取得エラー: {str(e)}"
 
 # ----------------------------------------------------
-# Gemini AI 予想ロジック (gemini-3.6-flash)
+# Gemini AI 予想エンジン (gemini-3.6-flash)
 # ----------------------------------------------------
 def analyze_with_gemini(api_key: str, venue_name: str, rno: int, racelist_data: str, before_data: str, focus_type: str):
     client = genai.Client(api_key=api_key)
@@ -404,7 +403,7 @@ def analyze_with_gemini(api_key: str, venue_name: str, rno: int, racelist_data: 
 if "active_tab" not in st.session_state:
     st.session_state.active_tab = "開催一覧"
 if "selected_jcd" not in st.session_state:
-    st.session_state.selected_jcd = "12"  # 住之江
+    st.session_state.selected_jcd = "12"
 if "selected_rno" not in st.session_state:
     st.session_state.selected_rno = 11
 if "racelist_data" not in st.session_state:
@@ -430,8 +429,8 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-# 開催状況データを取得（日本時間）
-venue_status, deadline_list = fetch_all_venues_status_perfect(today_jst_str)
+# 開催状況データを取得（個別ピンポイント抽出）
+venue_status, deadline_list = fetch_all_venues_status_safe(today_jst_str)
 
 # ナビゲーションタブ
 c_nav1, c_nav2, c_nav3 = st.columns([1, 1, 1.2])
