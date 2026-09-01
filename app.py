@@ -3,7 +3,6 @@ import requests
 from bs4 import BeautifulSoup
 import datetime
 import os
-import re
 from google import genai
 from google.genai import types
 
@@ -45,21 +44,6 @@ st.markdown("""
         text-align: center;
         font-weight: bold;
         cursor: pointer;
-    }
-    .boat-card {
-        padding: 12px;
-        border-radius: 8px;
-        margin-bottom: 10px;
-        border-left: 6px solid #1a3a6c;
-        background-color: #ffffff;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-    }
-    .odds-box {
-        background: #f8fafc;
-        border: 1px solid #e2e8f0;
-        padding: 10px;
-        border-radius: 6px;
-        margin-top: 10px;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -198,8 +182,9 @@ def analyze_with_gemini(api_key: str, venue_name: str, rno: int, racelist_data: 
 - 一言でまとめる勝負ポイント
 """
 
+    # モデル名を最新の gemini-3.6-flash に指定
     response = client.models.generate_content(
-        model="gemini-2.5-flash",
+        model="gemini-3.6-flash",
         contents=prompt,
     )
     return response.text
@@ -231,11 +216,10 @@ with col_mode:
         ["バランス（本線＋抑え）", "本命重視（イン鉄板・点数絞り）", "穴・高配当狙い（展開波乱・まくり重視）"]
     )
 
-# 24場選択グリッドUI（公式アプリ風レイアウト）
+# 24場選択グリッドUI
 st.write("▼ **開催場を選択してください**")
-selected_venue_code = st.session_state.get("selected_jcd", "20") # デフォルト若松
+selected_venue_code = st.session_state.get("selected_jcd", "19") # 下関をデフォルトに
 
-# 4列×6行グリッド
 cols = st.columns(4)
 for idx, v in enumerate(VENUES):
     col = cols[idx % 4]
@@ -280,7 +264,6 @@ with col_btn1:
                 st.session_state.before_data = b_data
                 st.success("データ取得完了！")
 
-# 取得データの確認アコーディオン
 if st.session_state.racelist_data:
     with st.expander("📋 取得済みデータプレビュー", expanded=False):
         st.text_area("出走表データ", st.session_state.racelist_data, height=120)
@@ -289,17 +272,15 @@ if st.session_state.racelist_data:
 with col_btn2:
     execute_prediction = st.button("🔥 AIフォーメーション予想を実行", type="primary", use_container_width=True)
 
-# 予想実行と結果表示
 if execute_prediction:
     if not api_key:
         st.error("Gemini APIキーを設定してください。")
     else:
-        # データが未取得なら自動取得を試みる
         if not st.session_state.racelist_data:
             with st.spinner("レースデータを取得中..."):
                 r_data, _ = fetch_racelist(selected_venue_code, selected_rno, hd_str)
                 b_data, _ = fetch_beforeinfo(selected_venue_code, selected_rno, hd_str)
-                st.session_state.racelist_data = r_data or "出走表データ取得失敗（手動確認推奨）"
+                st.session_state.racelist_data = r_data or "出走表データ取得失敗"
                 st.session_state.before_data = b_data or "直前情報なし"
 
         with st.spinner("🤖 Geminiが展開シミュレーション・展示タイム・機力を解析中..."):
