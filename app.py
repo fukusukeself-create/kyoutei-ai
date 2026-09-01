@@ -1,6 +1,8 @@
 import os
 import json
 import time
+import itertools
+from datetime import datetime, timezone, timedelta
 import streamlit as st
 from google import genai
 from google.genai import types
@@ -13,7 +15,11 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# カスタムCSS（公式アプリ風デザイン）
+# 日本標準時 (JST) 取得
+JST = timezone(timedelta(hours=9))
+now_jst = datetime.now(JST)
+
+# カスタムCSS
 st.markdown("""
 <style>
     .stApp { background-color: #f4f6f9; }
@@ -22,7 +28,7 @@ st.markdown("""
         color: white;
         padding: 12px 16px;
         border-radius: 8px;
-        margin-bottom: 15px;
+        margin-bottom: 12px;
         display: flex;
         align-items: center;
         justify-content: space-between;
@@ -47,7 +53,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# 1. APIキーの自動取得（Secrets優先）
+# 1. APIキー取得
 GEMINI_API_KEY = ""
 if "GEMINI_API_KEY" in st.secrets:
     GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
@@ -63,7 +69,6 @@ def parse_and_expand_formation(formation_str):
         if len(parts) != 3:
             return str(formation_str), [], 0
 
-        # 各桁の数字を昇順で重複排除
         first_ranks = sorted(list(set([int(c) for c in parts[0] if c.isdigit()])))
         second_ranks = sorted(list(set([int(c) for c in parts[1] if c.isdigit()])))
         third_ranks = sorted(list(set([int(c) for c in parts[2] if c.isdigit()])))
@@ -73,7 +78,6 @@ def parse_and_expand_formation(formation_str):
         clean_third = "".join(map(str, third_ranks))
         formatted_str = f"{clean_first}-{clean_second}-{clean_third}"
 
-        # 3連単の買い目を重複なしで生成
         combinations = []
         for f in first_ranks:
             for s in second_ranks:
@@ -88,43 +92,99 @@ def parse_and_expand_formation(formation_str):
     except Exception:
         return str(formation_str), [], 0
 
-# 全国24場マスターデータ
-STADIUM_MASTER = [
-    {"id": "01", "name": "桐生", "type": "night", "status": "開催なし", "r": "", "time": "--:--"},
-    {"id": "02", "name": "戸田", "type": "day", "status": "開催なし", "r": "", "time": "--:--"},
-    {"id": "03", "name": "江戸川", "type": "day", "status": "開催なし", "r": "", "time": "--:--"},
-    {"id": "04", "name": "平和島", "type": "day", "status": "開催なし", "r": "", "time": "--:--"},
-    {"id": "05", "name": "多摩川", "type": "day", "grade": "G3", "day_num": "5日目", "status": "発売終了", "r": "12R", "time": "終了"},
-    {"id": "06", "name": "浜名湖", "type": "day", "grade": "G3", "day_num": "3日目", "status": "発売終了", "r": "12R", "time": "終了"},
-    {"id": "07", "name": "蒲郡", "type": "night", "status": "一般 最終日", "r": "8R", "time": "18:28", "active": True},
-    {"id": "08", "name": "常滑", "type": "day", "status": "一般 3日目", "r": "12R", "time": "終了"},
-    {"id": "09", "name": "津", "type": "day", "status": "開催なし", "r": "", "time": "--:--"},
-    {"id": "10", "name": "三国", "type": "day", "status": "開催なし", "r": "", "time": "--:--"},
-    {"id": "11", "name": "びわこ", "type": "day", "status": "開催なし", "r": "", "time": "--:--"},
-    {"id": "12", "name": "住之江", "type": "night", "status": "一般 初日", "r": "8R", "time": "18:22", "active": True},
-    {"id": "13", "name": "尼崎", "type": "day", "status": "一般 初日", "r": "12R", "time": "終了"},
-    {"id": "14", "name": "鳴門", "type": "day", "status": "開催なし", "r": "", "time": "--:--"},
-    {"id": "15", "name": "丸亀", "type": "night", "status": "開催なし", "r": "", "time": "--:--"},
-    {"id": "16", "name": "児島", "type": "day", "status": "一般 4日目", "r": "12R", "time": "終了"},
-    {"id": "17", "name": "宮島", "type": "day", "status": "開催なし", "r": "", "time": "--:--"},
-    {"id": "18", "name": "徳山", "type": "day", "status": "一般 2日目", "r": "12R", "time": "終了"},
-    {"id": "19", "name": "下関", "type": "night", "status": "一般 4日目", "r": "7R", "time": "18:15", "active": True},
-    {"id": "20", "name": "若松", "type": "night", "grade": "G3", "day_num": "2日目", "status": "8R", "r": "8R", "time": "18:40", "active": True},
-    {"id": "21", "name": "芦屋", "type": "day", "status": "一般 3日目", "r": "12R", "time": "終了"},
-    {"id": "22", "name": "福岡", "type": "day", "status": "開催なし", "r": "", "time": "--:--"},
-    {"id": "23", "name": "唐津", "type": "day", "status": "開催なし", "r": "", "time": "--:--"},
-    {"id": "24", "name": "大村", "type": "night", "status": "一般 初日", "r": "3R", "time": "18:34", "active": True},
+# ----------------------------------------------------
+# 3. リアルタイム動的スケジュール生成エンジン
+# ----------------------------------------------------
+# 本日の開催場設定（デイ・ナイター別）
+STADIUM_DEFINITIONS = [
+    {"id": "01", "name": "桐生", "type": "night", "active": False},
+    {"id": "02", "name": "戸田", "type": "day", "active": False},
+    {"id": "03", "name": "江戸川", "type": "day", "active": False},
+    {"id": "04", "name": "平和島", "type": "day", "active": False},
+    {"id": "05", "name": "多摩川", "type": "day", "grade": "G3", "active": True, "start_h": 10, "start_m": 45},
+    {"id": "06", "name": "浜名湖", "type": "day", "grade": "G3", "active": True, "start_h": 10, "start_m": 30},
+    {"id": "07", "name": "蒲郡", "type": "night", "active": True, "start_h": 15, "start_m": 15},
+    {"id": "08", "name": "常滑", "type": "day", "active": True, "start_h": 10, "start_m": 40},
+    {"id": "09", "name": "津", "type": "day", "active": False},
+    {"id": "10", "name": "三国", "type": "day", "active": False},
+    {"id": "11", "name": "びわこ", "type": "day", "active": False},
+    {"id": "12", "name": "住之江", "type": "night", "active": True, "start_h": 15, "start_m": 0},
+    {"id": "13", "name": "尼崎", "type": "day", "active": True, "start_h": 10, "start_m": 30},
+    {"id": "14", "name": "鳴門", "type": "day", "active": False},
+    {"id": "15", "name": "丸亀", "type": "night", "active": False},
+    {"id": "16", "name": "児島", "type": "day", "active": True, "start_h": 10, "start_m": 35},
+    {"id": "17", "name": "宮島", "type": "day", "active": False},
+    {"id": "18", "name": "徳山", "type": "day", "active": True, "start_h": 8, "start_m": 45},
+    {"id": "19", "name": "下関", "type": "night", "active": True, "start_h": 15, "start_m": 10},
+    {"id": "20", "name": "若松", "type": "night", "grade": "G3", "active": True, "start_h": 15, "start_m": 20},
+    {"id": "21", "name": "芦屋", "type": "day", "active": True, "start_h": 8, "start_m": 30},
+    {"id": "22", "name": "福岡", "type": "day", "active": False},
+    {"id": "23", "name": "唐津", "type": "day", "active": False},
+    {"id": "24", "name": "大村", "type": "night", "active": True, "start_h": 17, "start_m": 10},
 ]
 
-TIMELINE_RACES = [
-    {"stadium": "下関", "round": 7, "name": "ふく〜る特賞", "day": "4日目", "time": "18:15", "night": True},
-    {"stadium": "住之江", "round": 8, "name": "予選", "day": "初日", "time": "18:22", "night": True},
-    {"stadium": "蒲郡", "round": 8, "name": "一般戦", "day": "最終日", "time": "18:28", "night": True},
-    {"stadium": "大村", "round": 3, "name": "予選", "day": "初日", "time": "18:34", "night": True},
-    {"stadium": "若松", "round": 8, "name": "エイトビート", "day": "2日目", "grade": "G3", "time": "18:40", "night": True},
-    {"stadium": "下関", "round": 8, "name": "一般戦", "day": "4日目", "time": "18:45", "night": True},
-    {"stadium": "住之江", "round": 9, "name": "予選", "day": "初日", "time": "18:52", "night": True},
-]
+def calculate_dynamic_schedule():
+    """現在時刻を元に、各レース場の現在のRと締切時刻、締切順リストを動的算出"""
+    current_time_minutes = now_jst.hour * 60 + now_jst.minute
+    stadium_status_list = []
+    upcoming_races = []
+
+    for item in STADIUM_DEFINITIONS:
+        st_data = item.copy()
+        if not item.get("active"):
+            st_data["display_status"] = "開催なし"
+            st_data["r_text"] = "--:--"
+            st_data["is_racing"] = False
+            stadium_status_list.append(st_data)
+            continue
+
+        # 1R〜12Rの締切時刻を動的生成（1レース約30分間隔）
+        start_min = item["start_h"] * 60 + item["start_m"]
+        current_r = None
+        current_r_time_str = ""
+        is_finished = True
+
+        for r in range(1, 13):
+            r_close_min = start_min + (r - 1) * 30
+            close_h = r_close_min // 60
+            close_m = r_close_min % 60
+            time_str = f"{close_h:02d}:{close_m:02d}"
+
+            # 現在時刻より先の最も近いレースを探す
+            if r_close_min > current_time_minutes:
+                current_r = r
+                current_r_time_str = time_str
+                is_finished = False
+                
+                # 締切順リスト用に追加
+                upcoming_races.append({
+                    "stadium": item["name"],
+                    "round": r,
+                    "name": f"予選 / 特賞" if r >= 7 else "予選",
+                    "time": time_str,
+                    "time_min": r_close_min,
+                    "night": item["type"] == "night",
+                    "grade": item.get("grade", "")
+                })
+                break
+
+        if is_finished:
+            st_data["display_status"] = "発売終了"
+            st_data["r_text"] = "12R 終了"
+            st_data["is_racing"] = False
+        else:
+            st_data["display_status"] = f"一般戦" if not item.get("grade") else item.get("grade")
+            st_data["r_text"] = f"{current_r}R {current_r_time_str}"
+            st_data["is_racing"] = True
+            st_data["current_round"] = current_r
+
+        stadium_status_list.append(st_data)
+
+    # 締切が近い順にソート
+    upcoming_races = sorted(upcoming_races, key=lambda x: x["time_min"])
+    return stadium_status_list, upcoming_races
+
+dynamic_stadiums, dynamic_timeline = calculate_dynamic_schedule()
 
 # AI 予想関数（3.7 Flash優先 ➔ 3.6 Flash フォールバック）
 def analyze_with_ai(stadium, race_no, race_data, api_key):
@@ -164,64 +224,70 @@ def analyze_with_ai(stadium, race_no, race_data, api_key):
             continue
     raise Exception("一時的にサーバーが混雑しています。数十秒後に再試行してください。")
 
-# --- UI 構築 ---
-st.markdown("""
+# --- UI ヘッダー ---
+st.markdown(f"""
 <div class="main-header">
-    <div style="font-size:20px; font-weight:bold;">🚤 BOAT RACE AI ナビゲーター</div>
-    <div style="font-size:12px;">3連単フォーメーション自動計算</div>
+    <div style="font-size:18px; font-weight:bold;">🚤 BOAT RACE AI ナビゲーター</div>
+    <div style="font-size:13px; font-weight:bold; background:rgba(255,255,255,0.2); padding:3px 8px; border-radius:4px;">
+        現在時刻: {now_jst.strftime('%H:%M')} JST
+    </div>
 </div>
 """, unsafe_allow_html=True)
 
-tab1, tab2, tab3 = st.tabs(["🚩 開催一覧", "⏰ 締切順", "🎯 レース詳細・AI分析"])
+tab1, tab2, tab3 = st.tabs(["🚩 開催一覧", "⏰ 締切順（リアルタイム）", "🎯 レース詳細・AI分析"])
 
-# TAB 1: 開催一覧（KeyError対策済み）
+# TAB 1: 開催一覧（動的時刻同期）
 with tab1:
-    st.caption("本日の開催レース場")
+    st.caption("現在時刻に連動して進行中のRと締切時刻を自動更新")
     cols = st.columns(4)
-    for idx, item in enumerate(STADIUM_MASTER):
+    for idx, item in enumerate(dynamic_stadiums):
         with cols[idx % 4]:
             is_night = "🌙 " if item.get("type") == "night" else ""
             grade_badge = f"<span class='card-grade'>{item.get('grade')}</span> " if item.get("grade") else ""
-            active_border = "border: 2px solid #005bac;" if item.get("active") else "opacity: 0.6;"
-            bg_color = "#eef5fc" if item.get("active") else "#fbfbfb"
-            
-            r_text = item.get("r", "")
-            time_text = item.get("time", "")
-            status_display = f"{r_text} {time_text}".strip()
+            active_border = "border: 2px solid #005bac;" if item.get("is_racing") else "opacity: 0.6;"
+            bg_color = "#eef5fc" if item.get("is_racing") else "#fbfbfb"
             
             st.markdown(f"""
             <div style="background:{bg_color}; padding:10px; border-radius:8px; margin-bottom:8px; {active_border} text-align:center;">
-                <div style="font-size:16px; font-weight:bold; color:#111;">{is_night}{item.get('name', '')}</div>
-                <div style="font-size:11px; margin-top:2px;">{grade_badge}{item.get('status', '')}</div>
-                <div style="font-size:13px; font-weight:bold; color:#d32f2f; margin-top:4px;">{status_display}</div>
+                <div style="font-size:16px; font-weight:bold; color:#111;">{is_night}{item.get('name')}</div>
+                <div style="font-size:11px; margin-top:2px;">{grade_badge}{item.get('display_status')}</div>
+                <div style="font-size:13px; font-weight:bold; color:#d32f2f; margin-top:4px;">{item.get('r_text')}</div>
             </div>
             """, unsafe_allow_html=True)
 
-# TAB 2: 締切順
+# TAB 2: 締切順（過去のレースは自動消滅）
 with tab2:
-    st.subheader("⏱️ まもなく締切のレース")
-    for r in TIMELINE_RACES:
-        c1, c2, c3, c4 = st.columns([3, 4, 3, 2])
-        with c1:
-            night_icon = "🌙 " if r.get("night") else ""
-            st.markdown(f"### {night_icon}{r.get('stadium', '')}")
-            st.caption(f"{r.get('day', '')}")
-        with c2:
-            st.markdown(f"**{r.get('round', '')}R** {r.get('name', '')}")
-        with c3:
-            st.markdown(f"締切予定 **<span style='color:#d32f2f; font-size:18px;'>{r.get('time', '')}</span>**", unsafe_allow_html=True)
-        with c4:
-            if st.button("予想を見る", key=f"btn_{r.get('stadium')}_{r.get('round')}"):
-                st.session_state["selected_stadium"] = r.get('stadium')
-                st.session_state["selected_race"] = r.get('round')
-                st.toast(f"{r.get('stadium')} {r.get('round')}R を読み込みました！")
-        st.divider()
+    st.subheader("⏱️ まもなく締切のレース（締切時刻の早い順）")
+    if not dynamic_timeline:
+        st.info("本日の全レースの発売が終了しました。")
+    else:
+        for r in dynamic_timeline[:8]:  # 直近8レースを表示
+            c1, c2, c3, c4 = st.columns([3, 4, 3, 2])
+            with c1:
+                night_icon = "🌙 " if r.get("night") else ""
+                grade_b = f"[{r['grade']}] " if r.get("grade") else ""
+                st.markdown(f"### {night_icon}{r['stadium']}")
+                st.caption(f"{grade_b}開催中")
+            with c2:
+                st.markdown(f"**{r['round']}R** {r['name']}")
+            with c3:
+                st.markdown(f"締切予定 **<span style='color:#d32f2f; font-size:18px;'>{r['time']}</span>**", unsafe_allow_html=True)
+            with c4:
+                if st.button("予想を見る", key=f"btn_{r['stadium']}_{r['round']}"):
+                    st.session_state["selected_stadium"] = r['stadium']
+                    st.session_state["selected_race"] = r['round']
+                    st.toast(f"{r['stadium']} {r['round']}R を読み込みました！「🎯 レース詳細・AI分析」タブを開いてください。")
+            st.divider()
 
 # TAB 3: レース詳細・AI分析
 with tab3:
+    active_names = [s["name"] for s in dynamic_stadiums if s.get("is_racing")]
+    if not active_names:
+        active_names = ["住之江", "下関", "蒲郡", "若松", "大村"]
+        
     col_sel1, col_sel2 = st.columns(2)
     with col_sel1:
-        cur_stadium = st.selectbox("競艇場", ["住之江", "下関", "蒲郡", "若松", "大村", "多摩川", "浜名湖", "戸田", "平和島", "児島", "徳山"], index=0)
+        cur_stadium = st.selectbox("競艇場", active_names, index=0)
     with col_sel2:
         cur_race = st.slider("レース", 1, 12, value=8)
 
