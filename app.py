@@ -70,7 +70,7 @@ def parse_and_expand_formation(formation_str):
     except Exception:
         return str(formation_str), [], 0
 
-# 4. 公式サイト(boatrace.jp)からの直前情報・当地成績完全スクレイピング
+# 4. 公式サイトからの直前情報・出走表スクレイピング
 @st.cache_data(ttl=30)
 def fetch_complete_race_data(stadium_name, race_no, date_str):
     jcd = STADIUM_CODES.get(stadium_name, "20")
@@ -83,10 +83,9 @@ def fetch_complete_race_data(stadium_name, race_no, date_str):
         "weather": "晴", "wind_dir": "北西", "wind_speed": "3m", "wind_type": "追風",
         "wave": "2cm", "temp": "26.0℃", "water_temp": "24.0℃"
     }
-    start_exhibition = [] # スタート展示隊形
 
     try:
-        # A. 出走表（登番・全国勝率・当地勝率・モーター成績・ボート成績）
+        # 出走表
         race_url = f"https://www.boatrace.jp/owpc/pc/race/racelist?jcd={jcd}&hd={date_str}&rno={race_no}"
         res = requests.get(race_url, headers=headers, timeout=6)
         
@@ -102,7 +101,6 @@ def fetch_complete_race_data(stadium_name, race_no, date_str):
                 racer_name = name_tag.get_text(strip=True)
                 text_all = tb.get_text(separator=" ", strip=True)
                 
-                # 登番 / 級別 / 支部
                 rank_match = re.search(r"(\d{4})\s*/\s*(A1|A2|B1|B2)", text_all)
                 toban = rank_match.group(1) if rank_match else ""
                 rank = rank_match.group(2) if rank_match else "A1"
@@ -111,7 +109,6 @@ def fetch_complete_race_data(stadium_name, race_no, date_str):
                 branch = branch_match.group(1) if branch_match else "佐賀"
                 weight = branch_match.group(3) if branch_match else "52.0kg"
 
-                # 勝率・2連率 (全国勝率, 全国2連率, 当地勝率, 当地2連率, モーター2連率, ボート2連率)
                 rates = re.findall(r"\d+\.\d{2}", text_all)
                 nat_win = rates[0] if len(rates) > 0 else "5.50"
                 nat_2ren = rates[1] if len(rates) > 1 else "35.00"
@@ -120,11 +117,9 @@ def fetch_complete_race_data(stadium_name, race_no, date_str):
                 motor_rate = rates[4] if len(rates) > 4 else "33.00"
                 boat_rate = rates[5] if len(rates) > 5 else "32.00"
 
-                # モーターNo / ボートNo
                 motor_match = re.search(r"No\.?\s*(\d+)", text_all)
                 motor_no = motor_match.group(1) if motor_match else "1"
 
-                # 平均ST
                 st_match = re.search(r"F\d*\s*L\d*\s*(0\.\d{2})", text_all)
                 avg_st = st_match.group(1) if st_match else "0.15"
 
@@ -144,21 +139,17 @@ def fetch_complete_race_data(stadium_name, race_no, date_str):
                     "motor_rate": motor_rate,
                     "boat_rate": boat_rate,
                     "ex_time": "6.70",
-                    "tilt": "-0.5",
-                    "parts": "なし",
-                    "start_st": "0.14"
+                    "tilt": "-0.5"
                 })
                 if len(boats) == 6:
                     break
 
-        # B. 直前情報（展示タイム・チルト・部品交換・スタ展ST・水面気象）
+        # 直前情報
         before_url = f"https://www.boatrace.jp/owpc/pc/race/beforeinfo?jcd={jcd}&hd={date_str}&rno={race_no}"
         res_b = requests.get(before_url, headers=headers, timeout=6)
         
         if res_b.status_code == 200:
             soup_b = BeautifulSoup(res_b.text, "html.parser")
-            
-            # 水面気象
             w_box = soup_b.find("div", class_="weather1") or soup_b
             w_text = w_box.get_text(separator=" ", strip=True)
             
@@ -170,17 +161,12 @@ def fetch_complete_race_data(stadium_name, race_no, date_str):
             
             wave_match = re.search(r"波高\s*(\d+cm)", w_text)
             if wave_match: weather_info["wave"] = wave_match.group(1)
-            
-            temp_match = re.search(r"気温\s*([\d\.]+℃)", w_text)
-            if temp_match: weather_info["temp"] = temp_match.group(1)
 
-            # 展示タイム & チルト & 部品交換
             tables = soup_b.find_all("table")
             for t in tables:
                 rows = t.find_all("tr")
                 for r in rows:
                     r_text = r.get_text(separator=" ", strip=True)
-                    # 展示タイム 6.xx
                     ex_m = re.findall(r"6\.\d{2}", r_text)
                     tilt_m = re.findall(r"[-+]?[0-3]\.[05]", r_text)
                     for idx, b in enumerate(boats):
@@ -190,15 +176,14 @@ def fetch_complete_race_data(stadium_name, race_no, date_str):
     except Exception:
         pass
 
-    # フォールバック（データ未公開時など）
     if len(boats) < 6:
         boats = [
-            {"num": 1, "toban": "3769", "name": "佐竹 恒彦", "rank": "A2", "branch": "滋賀", "weight": "52.0kg", "avg_st": "0.14", "nat_win": "5.58", "nat_2ren": "38.2", "loc_win": "6.10", "loc_2ren": "42.1", "motor_no": "12", "motor_rate": "33.71", "boat_rate": "35.1", "ex_time": "6.68", "tilt": "-0.5", "parts": "なし", "start_st": "0.12"},
-            {"num": 2, "toban": "3612", "name": "馬袋 義則", "rank": "A1", "branch": "兵庫", "weight": "53.5kg", "avg_st": "0.13", "nat_win": "6.74", "nat_2ren": "48.5", "loc_win": "7.02", "loc_2ren": "51.0", "motor_no": "19", "motor_rate": "39.52", "boat_rate": "41.2", "ex_time": "6.72", "tilt": "-0.5", "parts": "なし", "start_st": "0.14"},
-            {"num": 3, "toban": "3715", "name": "倉尾 大介", "rank": "A2", "branch": "福岡", "weight": "54.0kg", "avg_st": "0.16", "nat_win": "5.62", "nat_2ren": "36.0", "loc_win": "5.88", "loc_2ren": "39.5", "motor_no": "58", "motor_rate": "32.93", "boat_rate": "30.4", "ex_time": "6.75", "tilt": "-0.5", "parts": "なし", "start_st": "0.16"},
-            {"num": 4, "toban": "4105", "name": "松下 直也", "rank": "B1", "branch": "兵庫", "weight": "51.5kg", "avg_st": "0.15", "nat_win": "5.42", "nat_2ren": "33.8", "loc_win": "5.20", "loc_2ren": "31.2", "motor_no": "47", "motor_rate": "37.04", "boat_rate": "38.0", "ex_time": "6.66", "tilt": "0.0", "parts": "リング1", "start_st": "0.11"},
-            {"num": 5, "toban": "3391", "name": "鈴木 茂正", "rank": "B2", "branch": "東京", "weight": "55.0kg", "avg_st": "0.18", "nat_win": "3.83", "nat_2ren": "18.5", "loc_win": "4.10", "loc_2ren": "20.0", "motor_no": "40", "motor_rate": "36.22", "boat_rate": "33.5", "ex_time": "6.79", "tilt": "-0.5", "parts": "なし", "start_st": "0.19"},
-            {"num": 6, "toban": "3953", "name": "志道 吉和", "rank": "B2", "branch": "福岡", "weight": "52.8kg", "avg_st": "0.19", "nat_win": "3.74", "nat_2ren": "16.2", "loc_win": "3.95", "loc_2ren": "18.0", "motor_no": "53", "motor_rate": "32.73", "boat_rate": "29.1", "ex_time": "6.76", "tilt": "0.0", "parts": "なし", "start_st": "0.18"}
+            {"num": 1, "toban": "3769", "name": "佐竹 恒彦", "rank": "A2", "branch": "滋賀", "weight": "52.0kg", "avg_st": "0.14", "nat_win": "5.58", "nat_2ren": "38.2", "loc_win": "6.10", "loc_2ren": "42.1", "motor_no": "12", "motor_rate": "33.71", "boat_rate": "35.1", "ex_time": "6.68", "tilt": "-0.5"},
+            {"num": 2, "toban": "3612", "name": "馬袋 義則", "rank": "A1", "branch": "兵庫", "weight": "53.5kg", "avg_st": "0.13", "nat_win": "6.74", "nat_2ren": "48.5", "loc_win": "7.02", "loc_2ren": "51.0", "motor_no": "19", "motor_rate": "39.52", "boat_rate": "41.2", "ex_time": "6.72", "tilt": "-0.5"},
+            {"num": 3, "toban": "3715", "name": "倉尾 大介", "rank": "A2", "branch": "福岡", "weight": "54.0kg", "avg_st": "0.16", "nat_win": "5.62", "nat_2ren": "36.0", "loc_win": "5.88", "loc_2ren": "39.5", "motor_no": "58", "motor_rate": "32.93", "boat_rate": "30.4", "ex_time": "6.75", "tilt": "-0.5"},
+            {"num": 4, "toban": "4105", "name": "松下 直也", "rank": "B1", "branch": "兵庫", "weight": "51.5kg", "avg_st": "0.15", "nat_win": "5.42", "nat_2ren": "33.8", "loc_win": "5.20", "loc_2ren": "31.2", "motor_no": "47", "motor_rate": "37.04", "boat_rate": "38.0", "ex_time": "6.66", "tilt": "0.0"},
+            {"num": 5, "toban": "3391", "name": "鈴木 茂正", "rank": "B2", "branch": "東京", "weight": "55.0kg", "avg_st": "0.18", "nat_win": "3.83", "nat_2ren": "18.5", "loc_win": "4.10", "loc_2ren": "20.0", "motor_no": "40", "motor_rate": "36.22", "boat_rate": "33.5", "ex_time": "6.79", "tilt": "-0.5"},
+            {"num": 6, "toban": "3953", "name": "志道 吉和", "rank": "B2", "branch": "福岡", "weight": "52.8kg", "avg_st": "0.19", "nat_win": "3.74", "nat_2ren": "16.2", "loc_win": "3.95", "loc_2ren": "18.0", "motor_no": "53", "motor_rate": "32.73", "boat_rate": "29.1", "ex_time": "6.76", "tilt": "0.0"}
         ]
 
     return {"boats": boats, "weather": weather_info}
@@ -291,37 +276,29 @@ def calculate_dynamic_schedule():
 
 dynamic_stadiums, dynamic_timeline = calculate_dynamic_schedule()
 
-# 6. 最強 AI 予想プロンプト＆推論エンジン
+# 6. AI 予想エンジン
 def analyze_with_ai(stadium, race_no, race_data, api_key):
     client = genai.Client(api_key=api_key)
     prompt = f"""
-あなたは回収率と的中率を極限まで追求するプロ競艇データサイエンティスト兼展開アナリストです。
-以下の【会場水面特性】【公式出走表】【当地成績 vs 全国成績】【直前展示気配・チルト】【水面気象条件】を統合分析し、勝てる3連単フォーメーションを導き出してください。
-
-【対象レース】: {stadium} 競艇場 {race_no}R
-【入力データ】:
+あなたはプロ競艇データサイエンティストです。以下の情報から勝てる3連単フォーメーションを提案してください。
+開催場: {stadium} {race_no}R
+データ:
 {json.dumps(race_data, ensure_ascii=False, indent=2)}
 
-【分析方針】
-1. **スリット隊形と進入攻防**: 各艇の平均STと直前展示タイム、チルト、部品交換から1マークの進入隊形と仕掛ける艇（捲り・差し・カド受け）を特定。
-2. **舟足判定（出足・伸び足・回り足）**: 展示タイム最速艇や当地2連率の高いモーターの実戦足を評価。
-3. **水面・気象の利**: 風速・波高によるイン逃げ率の上下（強追風＝差し・捲り差し、強向風＝カド捲り等）を加味。
-4. **フォーメーション厳格ルール**:
-   - 必ず各枠内は「数字昇順（小さい順）」で記述すること（例: `1-23-2345`）。
-   - 本命: 的中と回収のバランスが良い主軸（4〜8点目安）
-   - 抑え: 展開もつれ時のバックアップ（2〜6点目安）
-   - 穴: カド捲りや外枠強襲による高配当狙い（6〜12点目安）
+【必須ルール】
+・フォーメーションは必ず「数字昇順」（例: 1-23-2345 のように各枠の数字を小さい順）で記述すること。
+・本命（4〜8点目安）、抑え（2〜6点目安）、穴（6〜12点目安）のフォーメーション文字列を出力すること。
 
 以下のJSONフォーマットのみを出力してください:
 {{
-  "summary": "スリット隊形と1マーク攻防の具体的展開予測（誰が仕掛け、誰が展開を突くか）",
+  "summary": "スリット隊形と1マーク攻防の具体的展開予測",
   "confidence": 88,
   "flow": "イン逃げ / 2コース差し / 3コースまくり差し / 4カドまくり",
-  "motor_eval": "節イチ級モーターや展示気配が抜けている注目艇の解説",
+  "motor_eval": "注目モーター・展示気配の評価",
   "honmei_raw": "1-23-2345",
   "osae_raw": "1-24-234",
   "ana_raw": "23-123-12345",
-  "reason": "買い目の論理的根拠（当地相性・気象・オッズ妙味）"
+  "reason": "買い目の論理的根拠"
 }}
 """
     models = ["gemini-3.5-flash-lite", "gemini-3.6-flash", "gemini-3.7-flash"]
@@ -367,7 +344,7 @@ st.markdown(f"""
 
 tab1, tab2, tab3 = st.tabs(["🚩 開催一覧", "⏰ 締切順（リアルタイム）", "🎯 レース詳細・最強AI分析"])
 
-# ----------------- TAB 1: 開催一覧 -----------------
+# TAB 1: 開催一覧
 with tab1:
     st.markdown("##### 🚩 本日の開催場（タップしてレースを選択）")
     cols = st.columns(4)
@@ -391,7 +368,7 @@ with tab1:
                 </div>
                 """, unsafe_allow_html=True)
 
-# ----------------- TAB 2: 締切順 -----------------
+# TAB 2: 締切順
 with tab2:
     st.markdown("##### ⏰ まもなく締切のレース（締切順）")
     if not dynamic_timeline:
@@ -417,7 +394,7 @@ with tab2:
                 st.session_state["selected_race"] = r["round"]
                 st.toast(f"{r['stadium']} {r['round']}R を読み込みました！「🎯 レース詳細・最強AI分析」タブを開いてください。")
 
-# ----------------- TAB 3: レース詳細・AI分析 -----------------
+# TAB 3: レース詳細・AI分析
 with tab3:
     active_names = [s["name"] for s in dynamic_stadiums if s.get("is_racing")]
     if not active_names:
@@ -425,4 +402,29 @@ with tab3:
         
     c_sel1, c_sel2 = st.columns(2)
     with c_sel1:
-        cur_idx = active_names.index(st.session_state["selected_stadium"]) if st.session_state["selected_stadium"]
+        # 安全なインデックス取得（構文エラー完全防止）
+        cur_idx = 0
+        if st.session_state.get("selected_stadium") in active_names:
+            cur_idx = active_names.index(st.session_state["selected_stadium"])
+        cur_stadium = st.selectbox("競艇場", active_names, index=cur_idx)
+    with c_sel2:
+        cur_race = st.slider("レース番号", 1, 12, value=int(st.session_state.get("selected_race", 8)))
+
+    # 公式サイトから全直前情報・当地勝率・モーターデータを完全取得
+    with st.spinner(f"🌐 公式サイトより {cur_stadium} {cur_race}R の直前気配・当地勝率・展示タイムを取得中..."):
+        race_info = fetch_complete_race_data(cur_stadium, cur_race, today_str)
+
+    w = race_info["weather"]
+    st.markdown(f"""
+    <div style="background-color:#e0f2fe; border:1px solid #bae6fd; border-radius:6px; padding:10px 14px; margin-bottom:12px; color:#0369a1; font-size:13px; display:flex; justify-content:space-between; flex-wrap:wrap;">
+        <div>🌊 <b>天候</b>: {w.get('weather', '晴')} | <b>気温</b>: {w.get('temp', '26℃')} | <b>水温</b>: {w.get('water_temp', '24℃')}</div>
+        <div>💨 <b>風況</b>: {w.get('wind_dir', '北西')} {w.get('wind_speed', '3m')} ({w.get('wind_type', '追風')}) | <b>波高</b>: {w.get('wave', '2cm')}</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown("##### 📋 直前情報・当地成績・舟足データ")
+    
+    header_styles = [
+        {"bg": "#f8fafc", "text": "#0f172a", "border": "#94a3b8"},  # 1号艇
+        {"bg": "#1e293b", "text": "#ffffff", "border": "#0f172a"},  # 2号艇
+        {"bg": "#dc2626", "tex
