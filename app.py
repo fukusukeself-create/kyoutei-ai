@@ -1,8 +1,10 @@
 import os
 import json
+import time
 import streamlit as st
 from google import genai
 from google.genai import types
+from google.genai.errors import APIError
 
 # ページ基本設定
 st.set_page_config(page_title="BoatAI - 競艇予想", layout="wide", initial_sidebar_state="expanded")
@@ -42,19 +44,27 @@ def analyze_race_with_gemini(stadium, race_no, race_data, api_key):
   }}
 }}
 """
-    response = client.models.generate_content(
-        model="gemini-3.7-flash",
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-            temperature=0.2
-        )
-    )
-    return json.loads(response.text)
+    # 503混雑エラー対策：最大3回自動で再試行
+    for attempt in range(3):
+        try:
+            response = client.models.generate_content(
+                model="gemini-3.7-flash",
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    temperature=0.2
+                )
+            )
+            return json.loads(response.text)
+        except Exception as e:
+            if "503" in str(e) and attempt < 2:
+                time.sleep(2 * (attempt + 1))  # 2秒、4秒待機して再トライ
+                continue
+            raise e
 
 # UI
-st.title("🚤 Gemini 競艇AI予想システム")
-st.caption("全国24場対応 / 展開予測 & 買い目")
+st.title("🚤 Gemini 3.7 Flash 競艇予想AI")
+st.caption("全国24場対応 / リアルタイム展開予測 & 買い目")
 
 st.sidebar.header("レース選択")
 selected_stadium = st.sidebar.selectbox("競艇場を選択", STADIUMS)
@@ -82,11 +92,11 @@ for i, b in enumerate(sample_race_data["boats"]):
         st.caption(f"モーター: {b['motor_rate']}%")
         st.caption(f"ST: {b['st_avg']}")
 
-if st.button("🚀 Gemini でレースを分析", use_container_width=True):
+if st.button("🚀 Gemini 3.7 Flash でレースを分析", use_container_width=True):
     if not GEMINI_API_KEY:
         st.error("Gemini API Key を入力してください。")
     else:
-        with st.spinner("AIが展開を分析中..."):
+        with st.spinner("Gemini 3.7 Flash がスリット展開・水面状況を分析中..."):
             try:
                 result = analyze_race_with_gemini(selected_stadium, selected_race, sample_race_data, GEMINI_API_KEY)
                 st.divider()
@@ -96,7 +106,7 @@ if st.button("🚀 Gemini でレースを分析", use_container_width=True):
                 
                 c1, c2, c3 = st.columns(3)
                 with c1:
-                    st.success("🎯 **本命**")
+                    st.success("🎯 **本命 (3連単)**")
                     for buy in result['recommendations']['honmei']:
                         st.write(f"- `{buy}`")
                 with c2:
@@ -104,7 +114,7 @@ if st.button("🚀 Gemini でレースを分析", use_container_width=True):
                     for buy in result['recommendations']['osae']:
                         st.write(f"- `{buy}`")
                 with c3:
-                    st.error("⚡ **穴**")
+                    st.error("⚡ **穴・高配当**")
                     for buy in result['recommendations']['ana']:
                         st.write(f"- `{buy}`")
             except Exception as e:
