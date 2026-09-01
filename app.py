@@ -31,7 +31,7 @@ elif os.environ.get("GEMINI_API_KEY"):
 else:
     GEMINI_API_KEY = st.sidebar.text_input("🔑 Gemini API Key を入力", type="password")
 
-# 2. 全国24場 公式場コード辞書（公式グリッド順）
+# 2. 公式24場 定義（公式アプリと同じグリッド順）
 ALL_STADIUMS = [
     {"id": "01", "name": "桐生", "night": True},
     {"id": "02", "name": "戸田", "night": False},
@@ -59,10 +59,22 @@ ALL_STADIUMS = [
     {"id": "24", "name": "大村", "night": True},
 ]
 STADIUM_CODES = {s["name"]: s["id"] for s in ALL_STADIUMS}
+CODE_TO_STADIUM = {s["id"]: s["name"] for s in ALL_STADIUMS}
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-}
+# 通信セッション・ヘッダー設定（ブロック回避用）
+SESSION = requests.Session()
+SESSION.headers.update({
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+    "Accept-Language": "ja-JP,ja;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Referer": "https://www.boatrace.jp/",
+    "Sec-Ch-Ua": '"Not-A.Brand";v="99", "Chromium";v="124", "Google Chrome";v="124"',
+    "Sec-Ch-Ua-Mobile": "?0",
+    "Sec-Ch-Ua-Platform": '"Windows"',
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "same-origin"
+})
 
 # 3. フォーメーション計算エンジン
 def parse_and_expand_formation(formation_str):
@@ -92,10 +104,9 @@ def parse_and_expand_formation(formation_str):
     except Exception:
         return str(formation_str), [], 0
 
-# 4. 公式サイトから当日の全24場開催ステータス＆締切情報を一括スクレイピング
-@st.cache_data(ttl=45)
+# 4. 公式サイトから全24場の当日開催・進行レース・締切時刻を完全スクレイピング
+@st.cache_data(ttl=30)
 def fetch_all_stadiums_status(date_str):
-    url = f"https://www.boatrace.jp/owpc/pc/race/index?hd={date_str}"
     current_minutes = now_jst.hour * 60 + now_jst.minute
     
     stadium_dict = {}
@@ -115,94 +126,93 @@ def fetch_all_stadiums_status(date_str):
         }
 
     try:
-        res = requests.get(url, headers=HEADERS, timeout=8)
+        url = f"https://www.boatrace.jp/owpc/pc/race/index?hd={date_str}"
+        res = SESSION.get(url, timeout=8)
+        
+        active_jcds = set()
         if res.status_code == 200:
             soup = BeautifulSoup(res.text, "html.parser")
+            # 開催中の場リンクを全抽出
+            links = soup.find_all("a", href=re.compile(r"jcd=(\d{2})"))
+            for a in links:
+                m = re.search(r"jcd=(\d{2})", a["href"])
+                if m and m.group(1) in stadium_dict:
+                    active_jcds.add(m.group(1))
+
+        # 開催中の場それぞれから最新タイムスケジュールを取得
+        for jcd in active_jcds:
+            sdata = stadium_dict[jcd]
+            sdata["is_active"] = True
             
-            # 各開催場のブロックを探索
-            tbodies = soup.find_all("tbody")
-            for tb in tbodies:
-                links = tb.find_all("a", href=re.compile(r"jcd=(\d{2})"))
-                for a in links:
-                    m = re.search(r"jcd=(\d{2})", a["href"])
-                    if not m: continue
-                    jcd = m.group(1)
-                    if jcd in stadium_dict:
-                        stadium_dict[jcd]["is_active"] = True
+            r_url = f"https://www.boatrace.jp/owpc/pc/race/raceindex?jcd={jcd}&hd={date_str}"
+            r_res = SESSION.get(r_url, timeout=6)
+            if r_res.status_code != 200:
+                continue
 
-            # 開催中の場について詳細スケジュールを取得
-            for jcd, sdata in stadium_dict.items():
-                if not sdata["is_active"]:
+            r_soup = BeautifulSoup(r_res.text, "html.parser")
+            text_all = r_soup.get_text(separator=" ", strip=True)
+
+            # グレード判定
+            if "SG" in text_all: sdata["grade"] = "SG"
+            elif "G1" in text_all or "GI" in text_all: sdata["grade"] = "G1"
+            elif "G2" in text_all or "GII" in text_all: sdata["grade"] = "G2"
+            elif "G3" in text_all or "GIII" in text_all: sdata["grade"] = "G3"
+            else: sdata["grade"] = "一般"
+
+            # 日程判定
+            day_m = re.search(r"(初日|２日目|2日目|３日目|3日目|４日目|4日目|５日目|5日目|６日目|6日目|最終日)", text_all)
+            sdata["day_text"] = day_m.group(1) if day_m else "開催中"
+
+            # 各レースの締切時刻とレース名
+            r_info_dict = {}
+            tables = r_soup.find_all("table")
+            for t in tables:
+                for row in t.find_all("tr"):
+                    row_txt = row.get_text(separator=" ", strip=True)
+                    rm = re.search(r"(\d{1,2})R", row_txt)
+                    tm = re.search(r"(\d{2}:\d{2})", row_txt)
+                    if rm and tm:
+                        r_no = int(rm.group(1))
+                        if 1 <= r_no <= 12:
+                            r_title = "予選"
+                            if "選抜" in row_txt: r_title = "選抜戦"
+                            elif "特賞" in row_txt: r_title = "予選特賞"
+                            elif "特選" in row_txt: r_title = "一般特賞"
+                            elif "特別" in row_txt: r_title = "予選特別"
+                            elif "優勝" in row_txt: r_title = "優勝戦"
+                            
+                            r_info_dict[r_no] = {
+                                "time": tm.group(1),
+                                "title": r_title
+                            }
+            sdata["races"] = r_info_dict
+
+            # 進行中レースの特定
+            found_next = False
+            for r_no in sorted(r_info_dict.keys()):
+                t_str = r_info_dict[r_no]["time"]
+                try:
+                    th, tm_val = map(int, t_str.split(":"))
+                    t_min = th * 60 + tm_val
+                    if t_min > current_minutes:
+                        sdata["current_round"] = r_no
+                        sdata["deadline_time"] = t_str
+                        sdata["status_text"] = f"{r_no}R {t_str}"
+                        sdata["is_closed"] = False
+                        found_next = True
+                        break
+                except Exception:
                     continue
-                
-                r_url = f"https://www.boatrace.jp/owpc/pc/race/raceindex?jcd={jcd}&hd={date_str}"
-                r_res = requests.get(r_url, headers=HEADERS, timeout=6)
-                if r_res.status_code != 200:
-                    continue
 
-                r_soup = BeautifulSoup(r_res.text, "html.parser")
-                text_all = r_soup.get_text(separator=" ", strip=True)
-
-                # グレード・日程判定
-                if "SG" in text_all: sdata["grade"] = "SG"
-                elif "G1" in text_all or "GI" in text_all: sdata["grade"] = "G1"
-                elif "G2" in text_all or "GII" in text_all: sdata["grade"] = "G2"
-                elif "G3" in text_all or "GIII" in text_all: sdata["grade"] = "G3"
-
-                day_m = re.search(r"(初日|２日目|2日目|３日目|3日目|４日目|4日目|５日目|5日目|６日目|6日目|最終日)", text_all)
-                if day_m:
-                    sdata["day_text"] = day_m.group(1)
-
-                # 各レースの締切時刻とレース名
-                tables = r_soup.find_all("table")
-                r_info_dict = {}
-                for t in tables:
-                    for row in t.find_all("tr"):
-                        row_txt = row.get_text(separator=" ", strip=True)
-                        rm = re.search(r"(\d{1,2})R", row_txt)
-                        tm = re.search(r"(\d{2}:\d{2})", row_txt)
-                        if rm and tm:
-                            r_no = int(rm.group(1))
-                            if 1 <= r_no <= 12:
-                                r_title = "予選"
-                                if "選抜" in row_txt: r_title = "選抜戦"
-                                elif "特選" in row_txt: r_title = "特選"
-                                elif "予選特選" in row_txt or "特賞" in row_txt: r_title = "予選特賞"
-                                elif "優勝" in row_txt: r_title = "優勝戦"
-                                elif "特別" in row_txt: r_title = "予選特別"
-                                
-                                r_info_dict[r_no] = {
-                                    "time": tm.group(1),
-                                    "title": r_title
-                                }
-                sdata["races"] = r_info_dict
-
-                # 現在進行中レースの特定
-                found_next = False
-                for r_no in sorted(r_info_dict.keys()):
-                    t_str = r_info_dict[r_no]["time"]
-                    try:
-                        th, tm_val = map(int, t_str.split(":"))
-                        t_min = th * 60 + tm_val
-                        if t_min > current_minutes:
-                            sdata["current_round"] = r_no
-                            sdata["deadline_time"] = t_str
-                            sdata["status_text"] = f"{r_no}R {t_str}"
-                            sdata["is_closed"] = False
-                            found_next = True
-                            break
-                    except Exception:
-                        continue
-
-                if not found_next and r_info_dict:
-                    sdata["is_closed"] = True
-                    sdata["status_text"] = "発売終了"
-                    sdata["current_round"] = 12
+            if not found_next and r_info_dict:
+                sdata["is_closed"] = True
+                sdata["status_text"] = "発売終了"
+                sdata["current_round"] = 12
 
     except Exception:
         pass
 
-    # 締切順リスト作成
+    # 締切順タイムラインの生成
     upcoming_list = []
     for jcd, sdata in stadium_dict.items():
         if sdata["is_active"] and not sdata["is_closed"]:
@@ -230,7 +240,7 @@ def fetch_all_stadiums_status(date_str):
     upcoming_list = sorted(upcoming_list, key=lambda x: x["time_min"])
     return list(stadium_dict.values()), upcoming_list
 
-# 5. 公式出走表・直前気配・当地勝率スクレイピング
+# 5. 出走表・直前気配・選手データの取得
 @st.cache_data(ttl=20)
 def fetch_complete_race_data(stadium_name, race_no, date_str):
     jcd = STADIUM_CODES.get(stadium_name, "07")
@@ -248,10 +258,9 @@ def fetch_complete_race_data(stadium_name, race_no, date_str):
     try:
         # A. 出走表
         race_url = f"https://www.boatrace.jp/owpc/pc/race/racelist?jcd={jcd}&hd={date_str}&rno={race_no}"
-        res = requests.get(race_url, headers=HEADERS, timeout=8)
+        res = SESSION.get(race_url, timeout=8)
         if res.status_code == 200:
             soup = BeautifulSoup(res.text, "html.parser")
-            
             header_text = soup.get_text(separator=" ", strip=True)
             dm = re.search(r"締切予定\s*(\d{2}:\d{2})", header_text)
             if dm: race_meta["deadline"] = dm.group(1)
@@ -308,7 +317,7 @@ def fetch_complete_race_data(stadium_name, race_no, date_str):
 
         # B. 直前情報
         before_url = f"https://www.boatrace.jp/owpc/pc/race/beforeinfo?jcd={jcd}&hd={date_str}&rno={race_no}"
-        res_b = requests.get(before_url, headers=HEADERS, timeout=8)
+        res_b = SESSION.get(before_url, timeout=8)
         if res_b.status_code == 200:
             soup_b = BeautifulSoup(res_b.text, "html.parser")
             w_box = soup_b.find("div", class_="weather1") or soup_b
@@ -349,7 +358,7 @@ def analyze_with_ai(stadium, race_no, race_data, api_key):
 {json.dumps(race_data, ensure_ascii=False, indent=2)}
 
 【分析方針】
-1. **スリット隊形と進入攻防**: 各艇の平均STと直前展示タイム、チルトから1マークの進入隊形と仕掛ける艇（逃げ・捲り・差し・捲り差し）を特定。
+1. **スリット隊形と進入攻防**: 各艇の平均STと直前展示タイム、チルトから1マークの進入隊形と仕掛ける艇を特定。
 2. **舟足判定（出足・伸び足・回り足）**: 展示タイム最速艇や当地2連率の高いモーターの実戦足を評価。
 3. **水面・気象の利**: 風速・波高によるイン逃げ率の上下を加味。
 4. **フォーメーション厳格ルール**:
@@ -392,7 +401,7 @@ def analyze_with_ai(stadium, race_no, race_data, api_key):
 # データ取得
 all_status, upcoming_timeline = fetch_all_stadiums_status(today_str)
 
-# セッション状態
+# セッション状態管理
 if "selected_stadium" not in st.session_state:
     st.session_state["selected_stadium"] = "蒲郡"
 if "selected_race" not in st.session_state:
@@ -401,7 +410,7 @@ if "selected_race" not in st.session_state:
 # --- トップナビゲーションバー ---
 st.markdown(f"""
 <div style="background-color:#004b91; color:#ffffff; padding:10px 16px; border-radius:6px; margin-bottom:10px; display:flex; justify-content:space-between; align-items:center;">
-    <div style="font-size:18px; font-weight:bold;">🚤 トップ</div>
+    <div style="font-size:18px; font-weight:bold;">🚤 BOAT RACE トップ</div>
     <div style="font-size:12px; background-color:#ffffff; color:#004b91; padding:3px 8px; border-radius:4px; font-weight:bold;">
         {now_jst.strftime('%H:%M')} JST
     </div>
@@ -417,70 +426,60 @@ with tab_menu1:
     grid_cols = st.columns(4)
     for idx, s in enumerate(all_status):
         with grid_cols[idx % 4]:
-            # スタイル設定
             if not s["is_active"]:
-                # 非開催
-                bg_color = "#f1f5f9"
-                border_color = "#cbd5e1"
-                text_color = "#64748b"
-                sub_text = "--"
                 st.markdown(f"""
-                <div style="background-color:{bg_color}; border:1px solid {border_color}; border-radius:6px; padding:10px 4px; text-align:center; min-height:86px; margin-bottom:8px;">
-                    <div style="font-weight:bold; font-size:15px; color:{text_color};">{s['name']}</div>
-                    <div style="font-size:14px; color:#94a3b8; margin-top:8px;">{sub_text}</div>
+                <div style="background-color:#f1f5f9; border:1px solid #cbd5e1; border-radius:6px; padding:10px 4px; text-align:center; min-height:82px; margin-bottom:8px;">
+                    <div style="font-weight:bold; font-size:15px; color:#64748b;">{s['name']}</div>
+                    <div style="font-size:14px; color:#94a3b8; margin-top:10px;">--</div>
                 </div>
                 """, unsafe_allow_html=True)
             elif s["is_closed"]:
-                # 発売終了
-                bg_color = "#e2e8f0"
-                border_color = "#94a3b8"
-                grade_badge = f"<span style='background-color:#0284c7; color:#fff; font-size:10px; padding:1px 4px; border-radius:3px; margin-right:2px;'>{s['grade']}</span>" if s["grade"] else ""
-                day_badge = f"<span style='font-size:11px; color:#475569;'>{s['day_text']}</span>" if s["day_text"] else ""
+                g_badge = f"<span style='background-color:#0284c7; color:#fff; font-size:10px; padding:1px 4px; border-radius:3px; margin-right:2px;'>{s['grade']}</span>" if s['grade'] != "一般" else ""
                 st.markdown(f"""
-                <div style="background-color:{bg_color}; border:1px solid {border_color}; border-radius:6px; padding:6px 4px; text-align:center; min-height:86px; margin-bottom:8px;">
+                <div style="background-color:#e2e8f0; border:1px solid #94a3b8; border-radius:6px; padding:6px 4px; text-align:center; min-height:82px; margin-bottom:8px;">
                     <div style="font-weight:bold; font-size:15px; color:#334155;">{s['name']}</div>
-                    <div style="margin-top:2px;">{grade_badge}{day_badge}</div>
+                    <div style="font-size:11px; color:#475569; margin-top:2px;">{g_badge}{s['grade'] if s['grade']=='一般' else ''} {s['day_text']}</div>
                     <div style="font-size:12px; color:#64748b; font-weight:bold; margin-top:4px;">発売終了</div>
                 </div>
                 """, unsafe_allow_html=True)
             else:
-                # 発売中（ナイター/デイ）
                 is_night_icon = "🌙 " if s["night"] else ""
-                bg_color = "#e0e7ff" if s["night"] else "#eff6ff"
-                border_color = "#6366f1" if s["night"] else "#3b82f6"
-                grade_badge = f"<span style='background-color:#2563eb; color:#fff; font-size:10px; padding:1px 4px; border-radius:3px; margin-right:2px;'>{s['grade']}</span>" if s["grade"] else ""
-                day_badge = f"<span style='font-size:11px; color:#334155;'>{s['day_text']}</span>" if s["day_text"] else ""
+                card_bg = "#e0e7ff" if s["night"] else "#eff6ff"
+                border_c = "#6366f1" if s["night"] else "#3b82f6"
+                g_badge = f"<span style='background-color:#2563eb; color:#fff; font-size:10px; padding:1px 4px; border-radius:3px; margin-right:2px;'>{s['grade']}</span>" if s['grade'] != "一般" else ""
                 
                 st.markdown(f"""
-                <div style="background-color:{bg_color}; border:1.5px solid {border_color}; border-radius:6px; padding:6px 4px; text-align:center; min-height:86px; margin-bottom:4px;">
+                <div style="background-color:{card_bg}; border:1.5px solid {border_c}; border-radius:6px; padding:6px 4px; text-align:center; min-height:82px; margin-bottom:4px;">
                     <div style="font-weight:bold; font-size:15px; color:#0f172a;">{is_night_icon}{s['name']}</div>
-                    <div style="margin-top:2px;">{grade_badge}{day_badge}</div>
+                    <div style="font-size:11px; color:#334155; margin-top:2px;">{g_badge}{s['grade'] if s['grade']=='一般' else ''} {s['day_text']}</div>
                     <div style="font-size:13px; color:#dc2626; font-weight:bold; margin-top:4px;">{s['status_text']}</div>
                 </div>
                 """, unsafe_allow_html=True)
-                if st.button("選択", key=f"sel_btn_{s['id']}", use_container_width=True):
+                if st.button("選択", key=f"btn_st_{s['id']}", use_container_width=True):
                     st.session_state["selected_stadium"] = s["name"]
                     st.session_state["selected_race"] = s["current_round"]
-                    st.toast(f"{s['name']} {s['current_round']}R を選択しました。「🎯 レース詳細・最強AI分析」タブを開いてください。")
+                    st.toast(f"{s['name']} {s['current_round']}R を読み込みました！「🎯 レース詳細・最強AI分析」タブを開いてください。")
 
 # ==========================================
 # TAB 2: 締切順（公式リストUI）
 # ==========================================
 with tab_menu2:
     if not upcoming_timeline:
-        st.info("本日のレース発売はすべて終了しました。")
+        st.info("現在、投票受付中のレースはありません。")
     else:
         for r in upcoming_timeline:
             is_night_str = "🌙 " if r["night"] else ""
-            grade_html = f"<span style='background-color:#2563eb; color:#ffffff; font-size:11px; font-weight:bold; padding:2px 6px; border-radius:4px; margin-right:6px;'>{r['grade']}</span>" if r['grade'] else ""
-            
+            grade_badge = f"<span style='background-color:#2563eb; color:#ffffff; font-size:11px; font-weight:bold; padding:2px 6px; border-radius:4px; margin-right:6px;'>{r['grade']}</span>" if r['grade'] != "一般" else ""
+            card_bg = "#eff6ff" if not r["night"] else "#f5f3ff"
+            border_c = "#bfdbfe" if not r["night"] else "#ddd6fe"
+
             st.markdown(f"""
-            <div style="background-color:#f8fafc; border:1.5px solid #cbd5e1; border-radius:8px; padding:10px 14px; margin-bottom:8px; display:flex; justify-content:space-between; align-items:center;">
+            <div style="background-color:{card_bg}; border:1.5px solid {border_c}; border-radius:8px; padding:10px 14px; margin-bottom:8px; display:flex; justify-content:space-between; align-items:center;">
                 <div>
                     <div style="display:flex; align-items:center;">
-                        {grade_html}
+                        {grade_badge}
                         <span style="font-size:17px; font-weight:bold; color:#0f172a;">{is_night_str}{r['stadium']}</span>
-                        <span style="font-size:13px; color:#64748b; margin-left:8px;">{r['day_text']}</span>
+                        <span style="font-size:12px; color:#64748b; margin-left:8px;">{r['day_text']}</span>
                     </div>
                     <div style="font-size:15px; font-weight:bold; color:#0284c7; margin-top:2px;">
                         {r['round']}R {r['race_title']}
@@ -492,34 +491,32 @@ with tab_menu2:
                 </div>
             </div>
             """, unsafe_allow_html=True)
-            if st.button(f"👉 {r['stadium']} {r['round']}R の出走表・AI予想", key=f"timeline_btn_{r['stadium']}_{r['round']}", use_container_width=True):
+            if st.button(f"👉 {r['stadium']} {r['round']}R のAI予想を見る", key=f"tl_btn_{r['stadium']}_{r['round']}", use_container_width=True):
                 st.session_state["selected_stadium"] = r["stadium"]
                 st.session_state["selected_race"] = r["round"]
-                st.toast(f"{r['stadium']} {r['round']}R を選択しました。「🎯 レース詳細・最強AI分析」タブを開いてください。")
+                st.toast(f"{r['stadium']} {r['round']}R を読み込みました！「🎯 レース詳細・最強AI分析」タブを開いてください。")
 
 # ==========================================
 # TAB 3: レース詳細・AI分析
 # ==========================================
 with tab_menu3:
-    active_names = [s["name"] for s in all_status if s["is_active"]]
-    if not active_names:
-        active_names = [s["name"] for s in ALL_STADIUMS]
+    active_stadium_names = [s["name"] for s in all_status if s["is_active"]]
+    if not active_stadium_names:
+        active_stadium_names = [s["name"] for s in ALL_STADIUMS]
 
     c1, c2 = st.columns(2)
     with c1:
-        cur_idx = active_names.index(st.session_state["selected_stadium"]) if st.session_state["selected_stadium"] in active_names else 0
-        cur_stadium = st.selectbox("競艇場", active_names, index=cur_idx)
+        cur_idx = active_stadium_names.index(st.session_state["selected_stadium"]) if st.session_state["selected_stadium"] in active_stadium_names else 0
+        cur_stadium = st.selectbox("競艇場", active_stadium_names, index=cur_idx)
     with c2:
         cur_race = st.slider("レース番号", 1, 12, value=int(st.session_state.get("selected_race", 10)))
 
-    # 出走表取得
     with st.spinner(f"🌐 公式サイトより {cur_stadium} {cur_race}R の最新出走表・直前情報を取得中..."):
         race_info = fetch_complete_race_data(cur_stadium, cur_race, today_str)
 
     meta = race_info.get("meta", {})
     w = race_info["weather"]
 
-    # ヘッダー情報バナー
     st.markdown(f"""
     <div style="background-color:#0f172a; color:#ffffff; border-radius:8px; padding:10px 16px; margin-bottom:10px; display:flex; justify-content:space-between; align-items:center;">
         <div>
@@ -527,7 +524,7 @@ with tab_menu3:
             <span style="font-size:13px; color:#94a3b8; margin-left:8px;">{meta.get('distance', '1800m')}</span>
         </div>
         <div>
-            <span style="font-size:12px; color:#94a3b8;">締切予定:</span>
+            <span style="font-size:12px; color:#94a3b8;">公式締切予定:</span>
             <span style="font-size:22px; font-weight:bold; color:#f87171; margin-left:6px;">{meta.get('deadline', '--:--')}</span>
         </div>
     </div>
@@ -543,7 +540,7 @@ with tab_menu3:
     if not race_info["boats"]:
         st.warning(f"現在、{cur_stadium} {cur_race}R の出走表データが公開されていないか、非開催です。")
     else:
-        st.markdown("##### 📋 出走表・展示気配・モーターデータ")
+        st.markdown("##### 📋 公式出走表・展示気配・モーターデータ")
         header_styles = [
             {"bg": "#f8fafc", "text": "#0f172a", "border": "#94a3b8"},
             {"bg": "#1e293b", "text": "#ffffff", "border": "#0f172a"},
