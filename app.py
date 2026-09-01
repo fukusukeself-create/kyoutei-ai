@@ -1,7 +1,6 @@
 import os
 import json
 import time
-import itertools
 from datetime import datetime, timezone, timedelta
 import streamlit as st
 from google import genai
@@ -15,17 +14,23 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# 日本標準時 (JST) 取得
+# 日本標準時 (JST)
 JST = timezone(timedelta(hours=9))
 now_jst = datetime.now(JST)
 
-# カスタムCSS
+# コントラスト強化CSS（白飛び・透過を完全に防止）
 st.markdown("""
 <style>
-    .stApp { background-color: #f4f6f9; }
-    .main-header {
-        background: linear-gradient(90deg, #005bac 0%, #0088cc 100%);
-        color: white;
+    /* 全体設定 */
+    .stApp {
+        background-color: #f0f2f6 !important;
+        color: #111111 !important;
+    }
+    
+    /* ヘッダー */
+    .custom-header {
+        background: linear-gradient(90deg, #004b91 0%, #0077c8 100%);
+        color: #ffffff !important;
         padding: 12px 16px;
         border-radius: 8px;
         margin-bottom: 12px;
@@ -33,18 +38,36 @@ st.markdown("""
         align-items: center;
         justify-content: space-between;
     }
-    .card-grade { font-size: 10px; background: #005bac; color: white; border-radius: 3px; padding: 1px 4px; display: inline-block; }
-    .form-box {
-        background: #ffffff;
-        padding: 12px;
+    
+    /* テキスト強制視認 */
+    p, span, label, div, h1, h2, h3, h4, h5, h6 {
+        color: #111111 !important;
+    }
+    .text-white { color: #ffffff !important; }
+    .text-red { color: #d32f2f !important; font-weight: bold; }
+    .text-green { color: #2e7d32 !important; font-weight: bold; }
+    .text-orange { color: #e65100 !important; font-weight: bold; }
+
+    /* タイムラインカード */
+    .timeline-card {
+        background-color: #ffffff !important;
+        border: 1.5px solid #d0d7de !important;
         border-radius: 8px;
-        border: 1px solid #e0e0e0;
+        padding: 12px;
+        margin-bottom: 8px;
+    }
+
+    /* 予想結果カード */
+    .result-box {
+        background-color: #ffffff !important;
+        border-radius: 8px;
+        padding: 14px;
         margin-bottom: 10px;
+        border: 1px solid #cfd8dc;
     }
     .point-badge {
-        background-color: #d32f2f;
-        color: white;
-        padding: 2px 8px;
+        color: #ffffff !important;
+        padding: 3px 10px;
         border-radius: 12px;
         font-size: 13px;
         font-weight: bold;
@@ -53,7 +76,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# 1. APIキー取得
+# 1. APIキー自動取得
 GEMINI_API_KEY = ""
 if "GEMINI_API_KEY" in st.secrets:
     GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
@@ -62,7 +85,7 @@ elif os.environ.get("GEMINI_API_KEY"):
 else:
     GEMINI_API_KEY = st.sidebar.text_input("Gemini API Key を入力", type="password")
 
-# 2. フォーメーション厳密計算エンジン（重複排除・昇順ソート・点数計算）
+# 2. フォーメーション厳密計算エンジン
 def parse_and_expand_formation(formation_str):
     try:
         parts = str(formation_str).strip().replace(" ", "").split("-")
@@ -92,10 +115,7 @@ def parse_and_expand_formation(formation_str):
     except Exception:
         return str(formation_str), [], 0
 
-# ----------------------------------------------------
-# 3. リアルタイム動的スケジュール生成エンジン
-# ----------------------------------------------------
-# 本日の開催場設定（デイ・ナイター別）
+# 3. リアルタイム動的スケジュール
 STADIUM_DEFINITIONS = [
     {"id": "01", "name": "桐生", "type": "night", "active": False},
     {"id": "02", "name": "戸田", "type": "day", "active": False},
@@ -124,7 +144,6 @@ STADIUM_DEFINITIONS = [
 ]
 
 def calculate_dynamic_schedule():
-    """現在時刻を元に、各レース場の現在のRと締切時刻、締切順リストを動的算出"""
     current_time_minutes = now_jst.hour * 60 + now_jst.minute
     stadium_status_list = []
     upcoming_races = []
@@ -135,10 +154,10 @@ def calculate_dynamic_schedule():
             st_data["display_status"] = "開催なし"
             st_data["r_text"] = "--:--"
             st_data["is_racing"] = False
+            st_data["current_round"] = 1
             stadium_status_list.append(st_data)
             continue
 
-        # 1R〜12Rの締切時刻を動的生成（1レース約30分間隔）
         start_min = item["start_h"] * 60 + item["start_m"]
         current_r = None
         current_r_time_str = ""
@@ -150,17 +169,15 @@ def calculate_dynamic_schedule():
             close_m = r_close_min % 60
             time_str = f"{close_h:02d}:{close_m:02d}"
 
-            # 現在時刻より先の最も近いレースを探す
             if r_close_min > current_time_minutes:
                 current_r = r
                 current_r_time_str = time_str
                 is_finished = False
                 
-                # 締切順リスト用に追加
                 upcoming_races.append({
                     "stadium": item["name"],
                     "round": r,
-                    "name": f"予選 / 特賞" if r >= 7 else "予選",
+                    "name": "予選 / 特賞" if r >= 7 else "予選",
                     "time": time_str,
                     "time_min": r_close_min,
                     "night": item["type"] == "night",
@@ -172,21 +189,21 @@ def calculate_dynamic_schedule():
             st_data["display_status"] = "発売終了"
             st_data["r_text"] = "12R 終了"
             st_data["is_racing"] = False
+            st_data["current_round"] = 12
         else:
-            st_data["display_status"] = f"一般戦" if not item.get("grade") else item.get("grade")
+            st_data["display_status"] = "一般戦" if not item.get("grade") else item.get("grade")
             st_data["r_text"] = f"{current_r}R {current_r_time_str}"
             st_data["is_racing"] = True
             st_data["current_round"] = current_r
 
         stadium_status_list.append(st_data)
 
-    # 締切が近い順にソート
     upcoming_races = sorted(upcoming_races, key=lambda x: x["time_min"])
     return stadium_status_list, upcoming_races
 
 dynamic_stadiums, dynamic_timeline = calculate_dynamic_schedule()
 
-# AI 予想関数（3.7 Flash優先 ➔ 3.6 Flash フォールバック）
+# AI 予想関数
 def analyze_with_ai(stadium, race_no, race_data, api_key):
     client = genai.Client(api_key=api_key)
     prompt = f"""
@@ -224,72 +241,93 @@ def analyze_with_ai(stadium, race_no, race_data, api_key):
             continue
     raise Exception("一時的にサーバーが混雑しています。数十秒後に再試行してください。")
 
-# --- UI ヘッダー ---
+# セッション状態の初期化
+if "current_view" not in st.session_state:
+    st.session_state["current_view"] = "開催一覧"
+if "selected_stadium" not in st.session_state:
+    st.session_state["selected_stadium"] = "住之江"
+if "selected_race" not in st.session_state:
+    st.session_state["selected_race"] = 8
+
+# --- ヘッダー ---
 st.markdown(f"""
-<div class="main-header">
-    <div style="font-size:18px; font-weight:bold;">🚤 BOAT RACE AI ナビゲーター</div>
-    <div style="font-size:13px; font-weight:bold; background:rgba(255,255,255,0.2); padding:3px 8px; border-radius:4px;">
-        現在時刻: {now_jst.strftime('%H:%M')} JST
+<div class="custom-header">
+    <div style="font-size:18px; font-weight:bold; color:#fff !important;">🚤 BOAT RACE AI ナビゲーター</div>
+    <div style="font-size:13px; font-weight:bold; background:rgba(255,255,255,0.25); padding:4px 10px; border-radius:4px; color:#fff !important;">
+        {now_jst.strftime('%H:%M')} JST
     </div>
 </div>
 """, unsafe_allow_html=True)
 
-tab1, tab2, tab3 = st.tabs(["🚩 開催一覧", "⏰ 締切順（リアルタイム）", "🎯 レース詳細・AI分析"])
+# 画面切り替えタブ
+view_mode = st.radio(
+    "メニュー",
+    ["🚩 開催一覧", "⏰ 締切順（リアルタイム）", "🎯 レース詳細・AI分析"],
+    index=["🚩 開催一覧", "⏰ 締切順（リアルタイム）", "🎯 レース詳細・AI分析"].index(st.session_state["current_view"]),
+    horizontal=True,
+    label_visibility="collapsed"
+)
+st.session_state["current_view"] = view_mode
 
-# TAB 1: 開催一覧（動的時刻同期）
-with tab1:
-    st.caption("現在時刻に連動して進行中のRと締切時刻を自動更新")
+# ----------------- 画面1: 開催一覧 -----------------
+if st.session_state["current_view"] == "🚩 開催一覧":
+    st.markdown("#### 🚩 本日の開催場（タップして予想画面を開く）")
     cols = st.columns(4)
     for idx, item in enumerate(dynamic_stadiums):
         with cols[idx % 4]:
             is_night = "🌙 " if item.get("type") == "night" else ""
-            grade_badge = f"<span class='card-grade'>{item.get('grade')}</span> " if item.get("grade") else ""
-            active_border = "border: 2px solid #005bac;" if item.get("is_racing") else "opacity: 0.6;"
-            bg_color = "#eef5fc" if item.get("is_racing") else "#fbfbfb"
+            grade_b = f"[{item['grade']}] " if item.get("grade") else ""
             
-            st.markdown(f"""
-            <div style="background:{bg_color}; padding:10px; border-radius:8px; margin-bottom:8px; {active_border} text-align:center;">
-                <div style="font-size:16px; font-weight:bold; color:#111;">{is_night}{item.get('name')}</div>
-                <div style="font-size:11px; margin-top:2px;">{grade_badge}{item.get('display_status')}</div>
-                <div style="font-size:13px; font-weight:bold; color:#d32f2f; margin-top:4px;">{item.get('r_text')}</div>
-            </div>
-            """, unsafe_allow_html=True)
+            # ボタンラベルの作成
+            btn_label = f"{is_night}{item['name']}\n{grade_b}{item.get('display_status')}\n{item.get('r_text')}"
+            
+            # 開催中のみ強調
+            if item.get("is_racing"):
+                if st.button(btn_label, key=f"std_btn_{item['id']}", use_container_width=True, type="primary"):
+                    st.session_state["selected_stadium"] = item["name"]
+                    st.session_state["selected_race"] = item.get("current_round", 1)
+                    st.session_state["current_view"] = "🎯 レース詳細・AI分析"
+                    st.rerun()
+            else:
+                st.button(btn_label, key=f"std_btn_{item['id']}", use_container_width=True, disabled=True)
 
-# TAB 2: 締切順（過去のレースは自動消滅）
-with tab2:
-    st.subheader("⏱️ まもなく締切のレース（締切時刻の早い順）")
+# ----------------- 画面2: 締切順 -----------------
+elif st.session_state["current_view"] == "⏰ 締切順（リアルタイム）":
+    st.markdown("#### ⏰ まもなく締切のレース（締切順）")
     if not dynamic_timeline:
-        st.info("本日の全レースの発売が終了しました。")
+        st.info("本日の全レース発売が終了しました。")
     else:
-        for r in dynamic_timeline[:8]:  # 直近8レースを表示
-            c1, c2, c3, c4 = st.columns([3, 4, 3, 2])
-            with c1:
-                night_icon = "🌙 " if r.get("night") else ""
-                grade_b = f"[{r['grade']}] " if r.get("grade") else ""
-                st.markdown(f"### {night_icon}{r['stadium']}")
-                st.caption(f"{grade_b}開催中")
-            with c2:
-                st.markdown(f"**{r['round']}R** {r['name']}")
-            with c3:
-                st.markdown(f"締切予定 **<span style='color:#d32f2f; font-size:18px;'>{r['time']}</span>**", unsafe_allow_html=True)
-            with c4:
-                if st.button("予想を見る", key=f"btn_{r['stadium']}_{r['round']}"):
-                    st.session_state["selected_stadium"] = r['stadium']
-                    st.session_state["selected_race"] = r['round']
-                    st.toast(f"{r['stadium']} {r['round']}R を読み込みました！「🎯 レース詳細・AI分析」タブを開いてください。")
-            st.divider()
+        for r in dynamic_timeline[:8]:
+            with st.container():
+                c1, c2, c3 = st.columns([4, 4, 3])
+                with c1:
+                    night_icon = "🌙 " if r.get("night") else ""
+                    grade_b = f"<span style='color:#005bac; font-weight:bold;'>[{r['grade']}]</span> " if r.get("grade") else ""
+                    st.markdown(f"<h3 style='margin:0;'>{night_icon}{r['stadium']}</h3>", unsafe_allow_html=True)
+                    st.markdown(f"{grade_b}<b>{r['round']}R</b> {r['name']}", unsafe_allow_html=True)
+                with c2:
+                    st.markdown(f"<div style='margin-top:10px;'>締切予定: <b style='color:#d32f2f; font-size:20px;'>{r['time']}</b></div>", unsafe_allow_html=True)
+                with c3:
+                    st.write("")
+                    if st.button("予想を見る ➔", key=f"time_btn_{r['stadium']}_{r['round']}", use_container_width=True, type="primary"):
+                        st.session_state["selected_stadium"] = r["stadium"]
+                        st.session_state["selected_race"] = r["round"]
+                        st.session_state["current_view"] = "🎯 レース詳細・AI分析"
+                        st.rerun()
+                st.divider()
 
-# TAB 3: レース詳細・AI分析
-with tab3:
+# ----------------- 画面3: レース詳細・AI分析 -----------------
+elif st.session_state["current_view"] == "🎯 レース詳細・AI分析":
     active_names = [s["name"] for s in dynamic_stadiums if s.get("is_racing")]
     if not active_names:
         active_names = ["住之江", "下関", "蒲郡", "若松", "大村"]
         
     col_sel1, col_sel2 = st.columns(2)
     with col_sel1:
-        cur_stadium = st.selectbox("競艇場", active_names, index=0)
+        cur_idx = active_names.index(st.session_state["selected_stadium"]) if st.session_state["selected_stadium"] in active_names else 0
+        cur_stadium = st.selectbox("競艇場", active_names, index=cur_idx)
     with col_sel2:
-        cur_race = st.slider("レース", 1, 12, value=8)
+        cur_race = st.slider("レース番号", 1, 12, value=st.session_state["selected_race"])
 
     race_info = {
         "weather": {"weather": "晴", "wind": "北西 3m（追風）", "wave": "2cm", "temp": "26℃"},
@@ -304,30 +342,34 @@ with tab3:
     }
 
     w = race_info["weather"]
-    st.info(f"🌊 **水面気象**: 天候: {w['weather']} | 風: {w['wind']} | 波高: {w['wave']}")
+    st.markdown(f"""
+    <div style="background:#e3f2fd; padding:8px 12px; border-radius:6px; border:1px solid #90caf9; margin-bottom:10px;">
+        🌊 <b>水面気象</b>: 天候: {w['weather']} | 風: {w['wind']} | 波高: {w['wave']} | 気温: {w['temp']}
+    </div>
+    """, unsafe_allow_html=True)
 
     st.markdown("##### 📋 出走表・展示気配・オッズ")
     boat_cols = st.columns(6)
     colors = ["#ffffff", "#212121", "#d32f2f", "#1976d2", "#fbc02d", "#388e3c"]
-    text_colors = ["#000", "#fff", "#fff", "#fff", "#000", "#fff"]
+    text_colors = ["#000000", "#ffffff", "#ffffff", "#ffffff", "#000000", "#ffffff"]
 
     for i, b in enumerate(race_info["boats"]):
         with boat_cols[i]:
             st.markdown(f"""
-            <div style="background:{colors[i]}; color:{text_colors[i]}; border:1px solid #999; border-radius:6px; padding:6px; text-align:center; font-size:12px;">
-                <div style="font-size:16px; font-weight:bold;">{b['num']}号艇</div>
-                <div style="font-weight:bold; font-size:14px; margin:2px 0;">{b['name']}</div>
-                <div>{b['rank']} / {b['branch']}</div>
+            <div style="background:{colors[i]}; color:{text_colors[i]} !important; border:1.5px solid #666; border-radius:6px; padding:6px; text-align:center; font-size:12px; box-shadow:0 1px 3px rgba(0,0,0,0.15);">
+                <div style="font-size:15px; font-weight:bold; color:{text_colors[i]} !important;">{b['num']}号艇</div>
+                <div style="font-weight:bold; font-size:14px; margin:2px 0; color:{text_colors[i]} !important;">{b['name']}</div>
+                <div style="color:{text_colors[i]} !important;">{b['rank']} / {b['branch']}</div>
                 <hr style="margin:4px 0; border-color:#888;">
-                <div>展示: <b>{b['ex_time']}</b></div>
-                <div>2連率: {b['motor_rate']}%</div>
-                <div style="color:#d32f2f; font-weight:bold; background:#fff; border-radius:3px; margin-top:2px;">単勝 {b['odds']}倍</div>
+                <div style="color:{text_colors[i]} !important;">展示: <b>{b['ex_time']}</b></div>
+                <div style="color:{text_colors[i]} !important;">2連率: {b['motor_rate']}%</div>
+                <div style="color:#d32f2f !important; font-weight:bold; background:#ffffff; border-radius:3px; margin-top:3px; padding:1px 0;">単勝 {b['odds']}倍</div>
             </div>
             """, unsafe_allow_html=True)
 
     st.write("")
     
-    if st.button(f"🚀 {cur_stadium} {cur_race}R フォーメーション予想を算出", use_container_width=True):
+    if st.button(f"🚀 {cur_stadium} {cur_race}R フォーメーション予想を算出", use_container_width=True, type="primary"):
         if not GEMINI_API_KEY:
             st.error("Gemini API Key が設定されていません。")
         else:
@@ -336,10 +378,16 @@ with tab3:
                     res, used_model = analyze_with_ai(cur_stadium, cur_race, race_info, GEMINI_API_KEY)
                     
                     st.success(f"✅ 解析完了（Engine: {used_model}）")
-                    st.markdown("### 📊 展開予測")
-                    st.markdown(f"> **主要決まり手**: `{res['flow']}`  | **AI 自信度**: **{res['confidence']}%**")
-                    st.info(f"**展開分析**: {res['summary']}")
-                    st.caption(f"**根拠**: {res.get('reason', '')}")
+                    
+                    # 展開予測
+                    st.markdown(f"""
+                    <div style="background:#ffffff; padding:12px; border-radius:8px; border:1px solid #cfd8dc; margin-bottom:12px;">
+                        <h4 style="margin:0 0 6px 0;">📊 展開予測</h4>
+                        <div>主要決まり手: <b style="color:#005bac;">{res['flow']}</b> | AI 自信度: <b style="color:#d32f2f;">{res['confidence']}%</b></div>
+                        <p style="margin:6px 0 0 0;">{res['summary']}</p>
+                        <small style="color:#666 !important;">根拠: {res.get('reason', '')}</small>
+                    </div>
+                    """, unsafe_allow_html=True)
                     
                     st.markdown("### 🎯 3連単フォーメーション（点数自動計算済）")
                     
@@ -351,7 +399,7 @@ with tab3:
                     
                     with c1:
                         st.markdown(f"""
-                        <div class="form-box" style="border-left: 5px solid #2e7d32;">
+                        <div class="result-box" style="border-left: 5px solid #2e7d32;">
                             <span class="point-badge" style="background-color:#2e7d32;">計 {count_hon} 点</span>
                             <div style="color:#2e7d32; font-weight:bold; font-size:16px;">🎯 本命</div>
                             <div style="font-size:22px; font-weight:bold; margin: 8px 0; color:#111;">{f_hon}</div>
@@ -362,7 +410,7 @@ with tab3:
                             
                     with c2:
                         st.markdown(f"""
-                        <div class="form-box" style="border-left: 5px solid #ef6c00;">
+                        <div class="result-box" style="border-left: 5px solid #ef6c00;">
                             <span class="point-badge" style="background-color:#ef6c00;">計 {count_osa} 点</span>
                             <div style="color:#ef6c00; font-weight:bold; font-size:16px;">🛡️ 抑え</div>
                             <div style="font-size:22px; font-weight:bold; margin: 8px 0; color:#111;">{f_osa}</div>
@@ -373,7 +421,7 @@ with tab3:
                             
                     with c3:
                         st.markdown(f"""
-                        <div class="form-box" style="border-left: 5px solid #c62828;">
+                        <div class="result-box" style="border-left: 5px solid #c62828;">
                             <span class="point-badge" style="background-color:#c62828;">計 {count_ana} 点</span>
                             <div style="color:#c62828; font-weight:bold; font-size:16px;">⚡ 穴・高配当</div>
                             <div style="font-size:22px; font-weight:bold; margin: 8px 0; color:#111;">{f_ana}</div>
