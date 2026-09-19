@@ -174,7 +174,7 @@ def summarize(tickets: list[Ticket]) -> dict:
 
 # ---------------------------------------------------------------- 2点勝負
 # 券種ごとの候補 (確率の高い順)。オッズ表のキーは scraper.fetch_all_odds と同じ。
-KIND_KEY = {"単勝": "win", "馬連": "umaren", "馬単": "umatan", "ワイド": "wide", "三連複": "sanrenpuku", "三連単": "sanrentan"}
+KIND_KEY = {"単勝": "win", "複勝": "place", "馬連": "umaren", "馬単": "umatan", "ワイド": "wide", "三連複": "sanrenpuku", "三連単": "sanrentan"}
 
 
 def candidates(win: dict[int, float], odds: dict[str, dict[str, float]] | None = None) -> dict[str, list[Ticket]]:
@@ -182,8 +182,8 @@ def candidates(win: dict[int, float], odds: dict[str, dict[str, float]] | None =
     cp = combo_probs(win)
     odds = odds or {}
     out: dict[str, list[Ticket]] = {}
-    src = {"単勝": {(u,): p for u, p in win.items()}, "馬連": cp["umaren"], "馬単": cp["exacta"],
-           "ワイド": cp["wide"], "三連複": cp["trio"], "三連単": cp["trifecta"]}
+    src = {"単勝": {(u,): p for u, p in win.items()}, "複勝": {(u,): p for u, p in cp["place"].items()},
+           "馬連": cp["umaren"], "馬単": cp["exacta"], "ワイド": cp["wide"], "三連複": cp["trio"], "三連単": cp["trifecta"]}
     for kind, table in src.items():
         ts = [Ticket(kind, c, p, _odds_of(odds.get(KIND_KEY[kind], {}), c)) for c, p in table.items()]
         ts.sort(key=lambda t: -t.prob)
@@ -397,19 +397,29 @@ DEFAULT_VALUE_POLICY = {
 }
 
 
-def value_bets(win: dict[int, float], odds: dict[str, dict[str, float]] | None, policy: dict | None = None) -> dict[str, list[Ticket]]:
-    """券種 -> 期待値の高い順の買い目 (上限 max_points)。オッズが無い券種は空。"""
+def race_bands(surface: str, heads: int, cls_rank: float) -> dict:
+    """backtest/profit.py の条件別集計と同じ区分。"""
+    return dict(surface=surface,
+                heads_band="〜10頭" if heads <= 10 else "11〜14頭" if heads <= 14 else "15頭〜",
+                cls_band="新馬・未勝利" if cls_rank <= 0.5 else "1勝" if cls_rank <= 1.2 else "2勝・3勝" if cls_rank <= 2.5 else "OP・重賞")
+
+
+def value_bets(win: dict[int, float], odds: dict[str, dict[str, float]] | None, policy: dict | None = None,
+               bands: dict | None = None) -> dict[str, list[Ticket]]:
+    """券種 -> 期待値の高い順の買い目 (上限 max_points)。オッズが無い券種は空。
+    bands (race_bands の戻り) を渡すと、検証で回収率が低かった条件の券種は買わない。"""
     pol = policy or DEFAULT_VALUE_POLICY
     odds = odds or {}
-    cands = candidates(win, odds)
-    # candidates は上位10までなので、期待値買いは全組から見直す
     cp = combo_probs(win)
-    src = {"単勝": {(u,): p for u, p in win.items()}, "馬連": cp["umaren"], "馬単": cp["exacta"],
-           "ワイド": cp["wide"], "三連複": cp["trio"], "三連単": cp["trifecta"]}
+    src = {"単勝": {(u,): p for u, p in win.items()}, "複勝": {(u,): p for u, p in cp["place"].items()},
+           "馬連": cp["umaren"], "馬単": cp["exacta"], "ワイド": cp["wide"], "三連複": cp["trio"], "三連単": cp["trifecta"]}
     out: dict[str, list[Ticket]] = {}
     for kind, rule in pol["policy"].items():
         table = odds.get(KIND_KEY[kind], {})
         if not table:
+            out[kind] = []
+            continue
+        if bands and any(bands.get(col) == val for col, val in rule.get("exclude", [])):
             out[kind] = []
             continue
         ts = []
@@ -424,7 +434,7 @@ def value_bets(win: dict[int, float], odds: dict[str, dict[str, float]] | None, 
     return out
 
 
-PMIN_DEFAULT = {"単勝": 0.05, "馬連": 0.02, "ワイド": 0.05, "馬単": 0.01, "三連複": 0.01, "三連単": 0.003}
+PMIN_DEFAULT = {"単勝": 0.05, "複勝": 0.15, "馬連": 0.02, "ワイド": 0.05, "馬単": 0.01, "三連複": 0.01, "三連単": 0.003}
 
 
 def ev_ranked(win: dict[int, float], odds: dict[str, dict[str, float]] | None, pmin: dict | None = None,
@@ -433,8 +443,8 @@ def ev_ranked(win: dict[int, float], odds: dict[str, dict[str, float]] | None, p
     pmin = pmin or PMIN_DEFAULT
     odds = odds or {}
     cp = combo_probs(win)
-    src = {"単勝": {(u,): p for u, p in win.items()}, "馬連": cp["umaren"], "馬単": cp["exacta"],
-           "ワイド": cp["wide"], "三連複": cp["trio"], "三連単": cp["trifecta"]}
+    src = {"単勝": {(u,): p for u, p in win.items()}, "複勝": {(u,): p for u, p in cp["place"].items()},
+           "馬連": cp["umaren"], "馬単": cp["exacta"], "ワイド": cp["wide"], "三連複": cp["trio"], "三連単": cp["trifecta"]}
     out: dict[str, list[Ticket]] = {}
     for kind, table in src.items():
         ot = odds.get(KIND_KEY[kind], {})

@@ -29,9 +29,9 @@ DB = os.path.join(HERE, "data", "races.sqlite")
 OOS = os.path.join(HERE, "data", "oos.csv")
 OUT = os.path.join(ROOT, "models", "profit.json")
 
-TAKEOUT = {"単勝": 0.20, "馬連": 0.225, "ワイド": 0.225, "馬単": 0.25, "三連複": 0.25, "三連単": 0.275}
+TAKEOUT = {"単勝": 0.20, "複勝": 0.20, "馬連": 0.225, "ワイド": 0.225, "馬単": 0.25, "三連複": 0.25, "三連単": 0.275}
 # 確率がこれ未満の組は、期待値が高く見えても買わない (裾の確率はモデルが過大評価しがち)
-PMIN = {"単勝": 0.05, "馬連": 0.02, "ワイド": 0.05, "馬単": 0.01, "三連複": 0.01, "三連単": 0.003}
+PMIN = {"単勝": 0.05, "複勝": 0.15, "馬連": 0.02, "ワイド": 0.05, "馬単": 0.01, "三連複": 0.01, "三連単": 0.003}
 THRESHOLDS = [1.0, 1.1, 1.2, 1.3, 1.5]
 MAX_POINTS = 12       # 1券種1レースあたりの上限点数 (期待値の高い順)
 MIN_BETS_FIT = 150    # 方針を選ぶのに最低限必要な賭け数
@@ -41,7 +41,7 @@ def payout_map(pay: dict, kind: str) -> dict[tuple, int]:
     out = {}
     for combo, amt in pay.get(kind, []):
         nums = tuple(int(x) for x in combo.split("-") if x.isdigit())
-        out[nums if kind in ("単勝", "馬単", "三連単") else tuple(sorted(nums))] = amt
+        out[nums if kind in ("単勝", "複勝", "馬単", "三連単") else tuple(sorted(nums))] = amt
     return out
 
 
@@ -69,7 +69,9 @@ def main():
         p_m = dict(zip(um, grp.p_market))
         odds = dict(zip(um, grp.odds))
         cb, cm = strategy.combo_probs(p_b), strategy.combo_probs(p_m)
-        tables = {"単勝": ({(u,): p for u, p in p_b.items()}, None), "馬連": (cb["umaren"], cm["umaren"]),
+        tables = {"単勝": ({(u,): p for u, p in p_b.items()}, None),
+                  "複勝": ({(u,): p for u, p in cb["place"].items()}, {(u,): p for u, p in cm["place"].items()}),
+                  "馬連": (cb["umaren"], cm["umaren"]),
                   "ワイド": (cb["wide"], cm["wide"]), "馬単": (cb["exacta"], cm["exacta"]),
                   "三連複": (cb["trio"], cm["trio"]), "三連単": (cb["trifecta"], cm["trifecta"])}
         for kind, (tb, tm) in tables.items():
@@ -126,18 +128,50 @@ def main():
 
     def portfolio(d: pd.DataFrame) -> dict:
         parts = [d[(d.kind == k) & (d.ev >= v["threshold"])] for k, v in policy.items()]
-        return stat(pd.concat(parts) if parts else d.iloc[0:0])
+        return stat(apply_exclude(pd.concat(parts)) if parts else d.iloc[0:0])
 
     result = dict(
-        policy={k: dict(threshold=v["threshold"], pmin=v["pmin"]) for k, v in policy.items()},
+        policy={k: dict(threshold=v["threshold"], pmin=v["pmin"], exclude=v.get("exclude", [])) for k, v in policy.items()},
         max_points=MAX_POINTS, takeout=TAKEOUT, pmin=PMIN,
         fit=portfolio(fit), test=portfolio(test),
         fit_period=[str(oos[oos.date.astype(str).str[:4] <= "2025"].date.min()), str(oos[oos.date.astype(str).str[:4] <= "2025"].date.max())],
         test_period=[str(oos[oos.date.astype(str).str[:4] >= "2026"].date.min()), str(oos[oos.date.astype(str).str[:4] >= "2026"].date.max())],
-        test_by_kind={k: stat(test[(test.kind == k) & (test.ev >= v["threshold"])]) for k, v in policy.items()},
+        test_by_kind={k: stat(apply_exclude(test[(test.kind == k) & (test.ev >= v["threshold"])])) for k, v in policy.items()},
         grid=grid, races_fit=int(fit.race_id.nunique()) if not fit.empty else 0,
         races_test=int(test.race_id.nunique()) if not test.empty else 0,
     )
+    # ---- 採用した券種について、条件別 (芝ダ / 頭数 / クラス) の成績。選定期間で回収率 85% 未満の条件は外す
+    con = sqlite3.connect(DB)
+    info = pd.read_sql("SELECT race_id, surface, heads, cls, grade, name FROM races WHERE fetched=1", con)
+    con.close()
+    import features as F
+    info["cls_rank"] = [F.class_rank(" ".join([str(a), str(b), str(c)])) for a, b, c in zip(info.cls, info.grade, info.name)]
+    info["heads_band"] = pd.cut(info.heads, [0, 10, 14, 99], labels=["〜10頭", "11〜14頭", "15頭〜"]).astype(str)
+    info["cls_band"] = pd.cut(info.cls_rank, [-1, 0.5, 1.2, 2.5, 9], labels=["新馬・未勝利", "1勝", "2勝・3勝", "OP・重賞"]).astype(str)
+    df = df.merge(info[["race_id", "surface", "heads_band", "cls_band"]], on="race_id", how="left")
+    fit, test = df[df.race_id.isin(fit.race_id)], df[df.race_id.isin(test.race_id)]
+    excluded = {}
+    print("\n== 条件別 (採用券種・下限以上) ==")
+    for kind, v in policy.items():
+        fk, tk = fit[(fit.kind == kind) & (fit.ev >= v["threshold"])], test[(test.kind == kind) & (test.ev >= v["threshold"])]
+        for col in ("surface", "heads_band", "cls_band"):
+            for val in sorted(fk[col].dropna().unique()):
+                f, t = stat(fk[fk[col] == val]), stat(tk[tk[col] == val])
+                flag = ""
+                if f["bets"] >= 100 and f["roi"] < 0.85:
+                    excluded.setdefault(kind, []).append([col, val])
+                    flag = "  ← 外す"
+                print(f"  {kind} {col}={val}: fit {f['bets']}点 回収{f['roi']*100:.0f}% | test {t['bets']}点 回収{t['roi']*100:.0f}%{flag}")
+    for kind, v in policy.items():
+        v["exclude"] = excluded.get(kind, [])
+
+    def apply_exclude(d: pd.DataFrame) -> pd.DataFrame:
+        keep = pd.Series(True, index=d.index)
+        for kind, v in policy.items():
+            for col, val in v.get("exclude", []):
+                keep &= ~((d.kind == kind) & (d[col] == val))
+        return d[keep]
+
     # ---- 見送り無し: 全レースで「このレースで最も期待値の高い k 点」を買う
     print("\n== 見送り無し (全レースで期待値上位 k 点) ==")
     noskip_grid = []

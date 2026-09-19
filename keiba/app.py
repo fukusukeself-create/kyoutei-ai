@@ -265,7 +265,9 @@ if res and res["race_id"] == (rs.race_id if rs else None):
 
     # --- 買い目
     if mode == "収支プラス狙い":
-        vb = strategy.value_bets(plan.win_probs, odds, value_policy)
+        import features as F
+        bands = strategy.race_bands(race.surface, race.heads, F.class_rank(" ".join([race.cls, race.grade, race.name])))
+        vb = strategy.value_bets(plan.win_probs, odds, value_policy, bands)
         pol = value_policy or strategy.DEFAULT_VALUE_POLICY
         st.markdown('<div class="sec">買い目 (収支プラス狙い・期待値買い)</div>', unsafe_allow_html=True)
         all_v = [t for ts in vb.values() for t in ts]
@@ -290,6 +292,10 @@ if res and res["race_id"] == (rs.race_id if rs else None):
             for t in ns:
                 vb.setdefault(t.kind, []).append(t)
             all_v = ns
+        skipped = [k for k, r in pol["policy"].items() if any(bands.get(c) == v for c, v in r.get("exclude", []))]
+        if skipped and has_odds:
+            st.markdown(f'<div class="note">この条件 ({bands["surface"]} / {bands["heads_band"]} / {bands["cls_band"]}) では検証で回収率が低かったため買わない券種: {"・".join(skipped)}</div>',
+                        unsafe_allow_html=True)
         for kind, ts in vb.items():
             if not ts:
                 continue
