@@ -87,11 +87,9 @@ def main():
                     continue
                 rows.append((p * o, p, o, pm.get(combo, 0)))
             rows.sort(key=lambda r: -r[0])
-            for ev, p, o, payout in rows[:MAX_POINTS]:
-                if ev < thresholds[0]:
-                    break
-                bets.append(dict(race_id=rid, year=year, kind=kind, ev=ev, prob=p, odds=o, payout=payout))
-    df = pd.DataFrame(bets, columns=["race_id", "year", "kind", "ev", "prob", "odds", "payout"])
+            for rank, (ev, p, o, payout) in enumerate(rows[:MAX_POINTS], 1):
+                bets.append(dict(race_id=rid, year=year, kind=kind, ev=ev, prob=p, odds=o, payout=payout, rank=rank))
+    df = pd.DataFrame(bets, columns=["race_id", "year", "kind", "ev", "prob", "odds", "payout", "rank"])
     print(f"races {n_races}, candidate bets {len(df)}", flush=True)
     if df.empty:
         print("期待値が下限を超える組がありません。"); return
@@ -132,7 +130,7 @@ def main():
 
     result = dict(
         policy={k: dict(threshold=v["threshold"], pmin=v["pmin"]) for k, v in policy.items()},
-        max_points=MAX_POINTS, takeout=TAKEOUT,
+        max_points=MAX_POINTS, takeout=TAKEOUT, pmin=PMIN,
         fit=portfolio(fit), test=portfolio(test),
         fit_period=[str(oos[oos.date.astype(str).str[:4] <= "2025"].date.min()), str(oos[oos.date.astype(str).str[:4] <= "2025"].date.max())],
         test_period=[str(oos[oos.date.astype(str).str[:4] >= "2026"].date.min()), str(oos[oos.date.astype(str).str[:4] >= "2026"].date.max())],
@@ -140,6 +138,29 @@ def main():
         grid=grid, races_fit=int(fit.race_id.nunique()) if not fit.empty else 0,
         races_test=int(test.race_id.nunique()) if not test.empty else 0,
     )
+    # ---- 見送り無し: 全レースで「このレースで最も期待値の高い k 点」を買う
+    print("\n== 見送り無し (全レースで期待値上位 k 点) ==")
+    noskip_grid = []
+    best_ns = None
+    for label, sel in (
+        [(f"全券種 上位{k}点", lambda d, k=k: d.sort_values("ev", ascending=False).groupby("race_id").head(k)) for k in (1, 2, 3, 5)]
+        + [(f"{kind} 上位{k}点", lambda d, kind=kind, k=k: d[(d.kind == kind) & (d["rank"] <= k)]) for kind in TAKEOUT for k in (1, 2, 3)]
+        + [("単勝1点+ワイド1点", lambda d: d[((d.kind == "単勝") | (d.kind == "ワイド")) & (d["rank"] <= 1)]),
+           ("単勝1点+馬連1点+ワイド1点", lambda d: d[d.kind.isin(["単勝", "馬連", "ワイド"]) & (d["rank"] <= 1)])]
+    ):
+        f, t = stat(sel(fit)), stat(sel(test))
+        noskip_grid.append(dict(label=label, fit=f, test=t))
+        print(f"{label:16s}: fit {f['bets']:6d}点 的中{f['hit_rate']*100:5.1f}% 回収{f['roi']*100:6.1f}% | "
+              f"test {t['bets']:6d}点 的中{t['hit_rate']*100:5.1f}% 回収{t['roi']*100:6.1f}%")
+        # 少ない的中 (まぐれ) で選ばないよう、選定期間で30回以上当たっている買い方から回収率最大を採る
+        f["hits"] = int(round(f["hit_rate"] * f["bets"]))
+        if f["hits"] >= 30 and (best_ns is None or f["roi"] > best_ns[1]["roi"]):
+            best_ns = (label, f, t)
+    if best_ns is None:
+        best_ns = max(((g["label"], g["fit"], g["test"]) for g in noskip_grid), key=lambda x: x[1]["roi"])
+    result["noskip"] = dict(label=best_ns[0], fit=best_ns[1], test=best_ns[2], grid=noskip_grid)
+    print("見送り無しの採用:", best_ns[0], "fit", best_ns[1], "test", best_ns[2])
+
     print("\nfit  :", result["fit"])
     print("test :", result["test"])
     for k, v in result["test_by_kind"].items():

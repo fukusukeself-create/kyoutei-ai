@@ -271,22 +271,43 @@ if res and res["race_id"] == (rs.race_id if rs else None):
         st.markdown('<div class="sec">買い目 (収支プラス狙い・期待値買い)</div>', unsafe_allow_html=True)
         all_v = [t for ts in vb.values() for t in ts]
         if not has_odds:
-            st.warning("オッズが未発売のため期待値を出せません。発走が近づいてから「オッズ更新」を押してください。")
+            st.warning("オッズが未発売のため期待値を出せません。発走が近づいてから「オッズ更新」を押してください。それまでは確率だけで組んだフォーメーションを出します。")
+            fm0 = strategy.formation("三連複", plan.win_probs, odds, "バランス")
+            st.markdown(f'<div class="fm-card"><div class="fm-title">三連複フォーメーション ({fm0["points"]}点・オッズ待ち)</div>'
+                        f'<div class="fm-text">{fm0["text"].replace(" / ", "<br>")}</div><div class="fm-sub">的中率 {fm0["cover"]*100:.0f}%</div></div>',
+                        unsafe_allow_html=True)
+            vb = {"三連複": fm0["tickets"]}
+            all_v = fm0["tickets"]
         elif not all_v:
-            st.info("このレースは見送り。市場より十分に確率が高い (期待値が下限を超える) 組がありません。")
+            ns_label = (value_policy or {}).get("noskip", {}).get("label") or "全券種 上位3点"
+            ns = strategy.noskip_bets(plan.win_probs, odds, ns_label, (value_policy or {}).get("pmin"))
+            st.markdown(f'<div class="note">期待値が下限を超える組は無し。見送らず、このレースで最も有利な買い目を出す (検証で選んだ買い方: <b>{ns_label}</b>)。</div>',
+                        unsafe_allow_html=True)
+            nsv = (value_policy or {}).get("noskip", {}).get("test")
+            if nsv and nsv.get("bets"):
+                st.markdown(f'<div class="note">この買い方の検証 ({value_policy["test_period"][0][:4]}年 {nsv["races"]:,}レース全部): 的中率 {nsv["hit_rate"]*100:.0f}% / 回収率 {nsv["roi"]*100:.0f}% / 収支 {nsv["profit"]:+,}円 (1点100円)</div>',
+                            unsafe_allow_html=True)
+            vb = {}
+            for t in ns:
+                vb.setdefault(t.kind, []).append(t)
+            all_v = ns
         for kind, ts in vb.items():
             if not ts:
                 continue
-            rule = pol["policy"][kind]
+            rule = pol["policy"].get(kind)
             sm = strategy.summarize(ts)
-            st.markdown(f'<div class="note"><b>{kind}</b> {sm["points"]}点 (期待値 {rule["threshold"]:.1f} 以上) / 的中率 {sm["hit"]*100:.0f}% / 期待回収率 {sm["ev"]*100:.0f}%</div>',
+            ev_txt = f" / 期待回収率 {sm['ev']*100:.0f}%" if sm["ev"] else ""
+            th_txt = f" (期待値 {rule['threshold']:.1f} 以上)" if rule and all(t.ev and t.ev >= rule["threshold"] for t in ts) else ""
+            st.markdown(f'<div class="note"><b>{kind}</b> {sm["points"]}点{th_txt} / 的中率 {sm["hit"]*100:.0f}%{ev_txt}</div>',
                         unsafe_allow_html=True)
             if kind in ("三連複", "三連単"):
                 st.markdown(f'<div class="fm-card"><div class="fm-title">{kind}フォーメーション ({len(ts)}点)</div>'
                             f'<div class="fm-text">{strategy.exact_formation(kind, [t.combo for t in ts]).replace(" / ", "<br>")}</div></div>',
                             unsafe_allow_html=True)
             for t in ts:
-                st.markdown(f'<div class="tk good"><span class="cmb">{kind} {t.label}</span><span class="meta">{t.prob*100:.1f}% / {t.odds:.1f}倍 / 期待値 {t.ev:.2f}</span></div>',
+                good = " good" if (t.ev or 0) >= 1.0 else ""
+                meta_t = f"{t.prob*100:.1f}%" + (f" / {t.odds:.1f}倍 / 期待値 {t.ev:.2f}" if t.odds else "")
+                st.markdown(f'<div class="tk{good}"><span class="cmb">{kind} {t.label}</span><span class="meta">{meta_t}</span></div>',
                             unsafe_allow_html=True)
         total = len(all_v)
         if value_policy and value_policy.get("test", {}).get("bets"):

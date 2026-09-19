@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import itertools
+import re
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -420,4 +421,46 @@ def value_bets(win: dict[int, float], odds: dict[str, dict[str, float]] | None, 
                 ts.append(Ticket(kind, c, p, o))
         ts.sort(key=lambda t: -(t.ev or 0))
         out[kind] = ts[: pol.get("max_points", 12)]
+    return out
+
+
+PMIN_DEFAULT = {"単勝": 0.05, "馬連": 0.02, "ワイド": 0.05, "馬単": 0.01, "三連複": 0.01, "三連単": 0.003}
+
+
+def ev_ranked(win: dict[int, float], odds: dict[str, dict[str, float]] | None, pmin: dict | None = None,
+              max_points: int = 12) -> dict[str, list[Ticket]]:
+    """券種ごとに、確率 >= pmin の組を期待値の高い順に (実オッズがある券種だけ)。"""
+    pmin = pmin or PMIN_DEFAULT
+    odds = odds or {}
+    cp = combo_probs(win)
+    src = {"単勝": {(u,): p for u, p in win.items()}, "馬連": cp["umaren"], "馬単": cp["exacta"],
+           "ワイド": cp["wide"], "三連複": cp["trio"], "三連単": cp["trifecta"]}
+    out: dict[str, list[Ticket]] = {}
+    for kind, table in src.items():
+        ot = odds.get(KIND_KEY[kind], {})
+        if not ot:
+            continue
+        ts = [Ticket(kind, c, p, _odds_of(ot, c)) for c, p in table.items() if p >= pmin.get(kind, 0.0)]
+        ts = [t for t in ts if t.odds]
+        ts.sort(key=lambda t: -(t.ev or 0))
+        out[kind] = ts[:max_points]
+    return out
+
+
+def noskip_bets(win: dict[int, float], odds: dict[str, dict[str, float]] | None, label: str,
+                pmin: dict | None = None) -> list[Ticket]:
+    """見送り無しの買い方。label は profit.py が選んだ "全券種 上位3点" / "ワイド 上位2点" / "単勝1点+ワイド1点"。"""
+    ranked = ev_ranked(win, odds, pmin)
+    m = re.match(r"全券種 上位(\d+)点", label)
+    if m:
+        allt = sorted((t for ts in ranked.values() for t in ts), key=lambda t: -(t.ev or 0))
+        return allt[: int(m.group(1))]
+    m = re.match(r"(\S+) 上位(\d+)点", label)
+    if m and m.group(1) in ranked:
+        return ranked[m.group(1)][: int(m.group(2))]
+    out = []
+    for part in label.split("+"):
+        mm = re.match(r"(\D+)(\d+)点", part)
+        if mm and mm.group(1) in ranked:
+            out.extend(ranked[mm.group(1)][: int(mm.group(2))])
     return out
