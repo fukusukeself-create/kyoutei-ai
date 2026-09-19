@@ -75,8 +75,16 @@ def predict(race: Race, win_odds: Optional[dict[str, float]] = None) -> Optional
     raw = m["win"].predict(X)
     raw3 = m["top3"].predict(X)
     umabans = [r["umaban"] for r in runners]
-    z = float(sum(raw)) or 1.0
-    model_p = {u: float(p) / z for u, p in zip(umabans, raw)}
+    if m["meta"].get("objective") == "rank":
+        temp = float(m["meta"].get("temperature") or 1.0)
+        sc = [float(v) / temp for v in raw]
+        mx = max(sc)
+        ex = [math.exp(v - mx) for v in sc]
+        z = sum(ex)
+        model_p = {u: e / z for u, e in zip(umabans, ex)}
+    else:
+        z = float(sum(raw)) or 1.0
+        model_p = {u: float(p) / z for u, p in zip(umabans, raw)}
     z3 = float(sum(raw3)) / 3.0 or 1.0
     top3_p = {u: min(1.0, float(p) / z3) for u, p in zip(umabans, raw3)}
     market = market_probs(win_odds or {}, umabans)

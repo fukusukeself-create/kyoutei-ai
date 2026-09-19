@@ -94,6 +94,49 @@ def logloss(df: pd.DataFrame, col: str) -> float:
     return float(-np.log(df.loc[df.is_win == 1, col].clip(1e-6, 1)).mean())
 
 
+def _softmax_in_race(df: pd.DataFrame, score: np.ndarray, temp: float) -> np.ndarray:
+    d = df[["race_id"]].copy()
+    d["s"] = score / temp
+    d["s"] -= d.groupby("race_id")["s"].transform("max")
+    d["e"] = np.exp(d["s"])
+    return (d["e"] / d.groupby("race_id")["e"].transform("sum")).to_numpy()
+
+
+def fit_rank(train: pd.DataFrame, rounds: int | None = None) -> tuple[lgb.Booster, float]:
+    """lambdarank: レース内で 1着>2着>3着>その他 の順位を学習する。スコアはレース内 softmax で確率にし、
+    その温度は学習期間末尾10%の対数損失が最小になる値にする。"""
+    train = train.sort_values("race_id").reset_index(drop=True)
+    label = train.finish.map({1: 3, 2: 2, 3: 1}).fillna(0).astype(int)
+    params = dict(PARAMS, objective="lambdarank", metric="ndcg", eval_at=[1, 3], lambdarank_truncation_level=8)
+    dates = sorted(train.date.unique())
+    cut = dates[int(len(dates) * 0.9)]
+    tr_m = train.date < cut
+    tr, ho = train[tr_m], train[~tr_m]
+    g_tr, g_ho = tr.groupby("race_id", sort=False).size().to_numpy(), ho.groupby("race_id", sort=False).size().to_numpy()
+    if rounds is None:
+        ds = lgb.Dataset(tr[F.FEATURES], label=label[tr_m], group=g_tr, categorical_feature=F.CATEGORICAL, free_raw_data=False)
+        dv = lgb.Dataset(ho[F.FEATURES], label=label[~tr_m], group=g_ho, categorical_feature=F.CATEGORICAL, reference=ds)
+        m = lgb.train(params, ds, num_boost_round=ROUNDS, valid_sets=[dv], callbacks=[lgb.early_stopping(50, verbose=False)])
+        rounds = max(50, m.best_iteration or ROUNDS)
+    else:
+        ds = lgb.Dataset(tr[F.FEATURES], label=label[tr_m], group=g_tr, categorical_feature=F.CATEGORICAL, free_raw_data=False)
+        m = lgb.train(params, ds, num_boost_round=rounds)
+    # 温度: 末尾10%で対数損失が最小
+    sc = m.predict(ho[F.FEATURES])
+    best_t, best_ll = 1.0, 9.9
+    for t in np.arange(0.3, 3.01, 0.1):
+        pr = _softmax_in_race(ho, sc, t)
+        ll = float(-np.log(np.clip(pr[ho.is_win.to_numpy() == 1], 1e-6, 1)).mean())
+        if ll < best_ll:
+            best_t, best_ll = float(t), ll
+    ds_all = lgb.Dataset(train[F.FEATURES], label=label, group=train.groupby("race_id", sort=False).size().to_numpy(),
+                         categorical_feature=F.CATEGORICAL, free_raw_data=False)
+    booster = lgb.train(params, ds_all, num_boost_round=rounds)
+    booster.rounds_used = rounds
+    booster.temperature = best_t
+    return booster, best_t
+
+
 def fit(train: pd.DataFrame, target: str, rounds: int | None = None) -> lgb.Booster:
     """rounds を指定しなければ、学習期間の末尾10% (日付順) を早期終了用に使って木の本数を決める。"""
     if rounds is None:
@@ -117,6 +160,7 @@ def main():
     ap.add_argument("--out", default=OUT)
     ap.add_argument("--folds", type=int, default=len(FOLDS))
     ap.add_argument("--valid-from", help="動作確認用: この日以降を1つの検証期間にする")
+    ap.add_argument("--objective", choices=["binary", "rank"], default="rank")
     args = ap.parse_args()
     folds = FOLDS[-args.folds:] if not args.valid_from else [(args.valid_from, "99999999")]
 
@@ -132,9 +176,15 @@ def main():
         stats = F.build_stats(_with_past(tr_r))
         df_tr = build_rows(races[races.date < start], tr_r, stats)
         df_va = build_rows(va_races, runners[runners.race_id.isin(va_races.race_id)], stats)
-        win_m, top3_m = fit(df_tr, "is_win"), fit(df_tr, "is_top3")
-        df_va["p_raw"] = win_m.predict(df_va[F.FEATURES])
-        df_va["p_model"] = norm_in_race(df_va, "p_raw")
+        top3_m = fit(df_tr, "is_top3")
+        if args.objective == "rank":
+            win_m, temp = fit_rank(df_tr)
+            df_va = df_va.sort_values("race_id").reset_index(drop=True)
+            df_va["p_model"] = _softmax_in_race(df_va, win_m.predict(df_va[F.FEATURES]), temp)
+        else:
+            win_m = fit(df_tr, "is_win")
+            df_va["p_raw"] = win_m.predict(df_va[F.FEATURES])
+            df_va["p_model"] = norm_in_race(df_va, "p_raw")
         df_va["p_top3"] = top3_m.predict(df_va[F.FEATURES])
         df_va["p_market"] = market_prob(df_va)
         df_va["fold"] = f"{start}-{end}"
@@ -175,7 +225,12 @@ def main():
     # 本番用: 全期間で学習
     stats_all = F.build_stats(_with_past(runners))
     df_all = build_rows(races, runners, stats_all)
-    win_all, top3_all = fit(df_all, "is_win"), fit(df_all, "is_top3")
+    top3_all = fit(df_all, "is_top3")
+    temperature = None
+    if args.objective == "rank":
+        win_all, temperature = fit_rank(df_all)
+    else:
+        win_all = fit(df_all, "is_win")
     imp = sorted(zip(F.FEATURES, win_all.feature_importance("gain")), key=lambda x: -x[1])
     metrics["importance"] = [(k, round(float(v), 1)) for k, v in imp[:25]]
     os.makedirs(args.out, exist_ok=True)
@@ -185,6 +240,7 @@ def main():
         json.dump(stats_all, fp, ensure_ascii=False, separators=(",", ":"))
     with open(os.path.join(args.out, "meta.json"), "w", encoding="utf-8") as fp:
         json.dump(dict(features=F.FEATURES, categorical=F.CATEGORICAL, metrics=metrics,
+                       objective=args.objective, temperature=temperature,
                        data_period=[str(races.date.min()), str(races.date.max())], races=int(len(races))),
                   fp, ensure_ascii=False, indent=1)
     print("saved to", args.out, flush=True)
