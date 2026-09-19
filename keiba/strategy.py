@@ -422,13 +422,18 @@ def value_bets(win: dict[int, float], odds: dict[str, dict[str, float]] | None, 
         if bands and any(bands.get(col) == val for col, val in rule.get("exclude", [])):
             out[kind] = []
             continue
+        excl_odds = {val for col, val in rule.get("exclude", []) if col == "odds_band"}
         ts = []
         for c, p in src[kind].items():
             if p < rule["pmin"]:
                 continue
             o = _odds_of(table, c)
-            if o and p * o >= rule["threshold"]:
-                ts.append(Ticket(kind, c, p, o))
+            if not o or p * o < rule["threshold"]:
+                continue
+            band = "〜10倍" if o < 10 else "10〜20倍" if o < 20 else "20〜40倍" if o < 40 else "40倍〜"
+            if band in excl_odds:
+                continue
+            ts.append(Ticket(kind, c, p, o))
         ts.sort(key=lambda t: -(t.ev or 0))
         out[kind] = ts[: pol.get("max_points", 12)]
     return out

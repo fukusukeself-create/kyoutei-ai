@@ -105,9 +105,41 @@ def waku_html(w: int) -> str:
     return f'<span class="wk waku{w}">{w}</span>'
 
 
+@st.cache_data(ttl=600, show_spinner=False)
+def load_day_bias(date: str, venue: str, before_rno: int):
+    """同じ日・同じ場で先に終わったレースの、勝ち馬の脚質・枠と3着内の枠。"""
+    import features as F
+    finished = []
+    try:
+        ms = load_meetings(date)
+    except scraper.ScrapeError:
+        return F.day_bias([])
+    m = next((x for x in ms if x.venue == venue), None)
+    if not m:
+        return F.day_bias([])
+    for r in m.races:
+        if r.rno >= before_rno:
+            continue
+        try:
+            res = load_result(r.race_id)
+            if not res:
+                continue
+            past = scraper.fetch_past(r.race_id)
+            win = res.order[0]
+            finished.append(dict(winner_style=(past.get(win["umaban"]) or {}).get("style"), winner_waku=win.get("waku"),
+                                 heads=len(res.order), top3_wakus=[o.get("waku") for o in res.order[:3] if o.get("waku")]))
+        except scraper.ScrapeError:
+            continue
+    return F.day_bias(finished)
+
+
 def run_prediction(race, odds, style):
     """統計モデル (無ければ簡易レーティング) → 買い目。"""
-    sm = statmodel.predict(race, odds.get("win"))
+    try:
+        day = load_day_bias(race.date, race.venue, race.rno)
+    except Exception:
+        day = None
+    sm = statmodel.predict(race, odds.get("win"), day)
     if sm:
         est = dict(probs=sm["probs"], model_probs=sm["model_probs"], market_probs=sm["market_probs"],
                    notes={u: statmodel.explain(f, statmodel.load()["stats"]) for u, f in sm["features"].items()},

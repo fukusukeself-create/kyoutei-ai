@@ -19,6 +19,15 @@ MODEL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
 _cache: dict = {}
 
 
+class _Ensemble:
+    def __init__(self, members):
+        self.members = members
+
+    def predict(self, X, raw_score=False):
+        import numpy as np
+        return np.mean([m.predict(X, raw_score=raw_score) for m in self.members], axis=0)
+
+
 def load() -> Optional[dict]:
     if "m" in _cache:
         return _cache["m"]
@@ -27,11 +36,21 @@ def load() -> Optional[dict]:
         win = lgb.Booster(model_file=os.path.join(MODEL_DIR, "win.txt"))
         top3 = lgb.Booster(model_file=os.path.join(MODEL_DIR, "top3.txt"))
         try:
-            win_mkt = lgb.Booster(model_file=os.path.join(MODEL_DIR, "win_mkt.txt"))
+            members = [lgb.Booster(model_file=os.path.join(MODEL_DIR, "win_mkt.txt"))]
+            i = 1
+            while os.path.exists(os.path.join(MODEL_DIR, f"win_mkt_{i}.txt")):
+                members.append(lgb.Booster(model_file=os.path.join(MODEL_DIR, f"win_mkt_{i}.txt")))
+                i += 1
+            win_mkt = _Ensemble(members)
         except Exception:
             win_mkt = None
         with open(os.path.join(MODEL_DIR, "stats.json"), encoding="utf-8") as fp:
             stats = json.load(fp)
+        try:
+            with open(os.path.join(MODEL_DIR, "horses.json"), encoding="utf-8") as fp:
+                horses = json.load(fp)
+        except Exception:
+            horses = {}
         with open(os.path.join(MODEL_DIR, "meta.json"), encoding="utf-8") as fp:
             meta = json.load(fp)
         policy = None
@@ -46,7 +65,8 @@ def load() -> Optional[dict]:
                 value_policy = json.load(fp)
         except Exception:
             value_policy = None
-        _cache["m"] = dict(win=win, win_mkt=win_mkt, top3=top3, stats=stats, meta=meta, policy=policy, value_policy=value_policy)
+        _cache["m"] = dict(win=win, win_mkt=win_mkt, top3=top3, stats=stats, meta=meta, policy=policy,
+                           value_policy=value_policy, horses=horses)
     except Exception:
         _cache["m"] = None
     return _cache["m"]
@@ -62,18 +82,26 @@ def market_probs(win_odds: dict[str, float], umabans: list[int]) -> dict[int, fl
     return {u: v / z for u, v in raw.items()} if z else {}
 
 
-def predict(race: Race, win_odds: Optional[dict[str, float]] = None) -> Optional[dict]:
-    """戻り: {probs, model_probs, market_probs, top3_probs, features, blend_w}。モデルが無ければ None。"""
+def predict(race: Race, win_odds: Optional[dict[str, float]] = None, day: Optional[dict] = None) -> Optional[dict]:
+    """戻り: {probs, model_probs, market_probs, top3_probs, features, blend_w}。モデルが無ければ None。
+    day: 当日その場で先に終わったレースの傾向 (features.day_bias の戻り)。"""
     m = load()
     if m is None:
         return None
+    import datetime as _dt
     import pandas as pd
     runners = [asdict(h) for h in race.horses if "取消" not in (h.rest_note or "") and "除外" not in (h.rest_note or "")]
     if not runners:
         return None
+    try:
+        date_ord = _dt.date(int(race.date[:4]), int(race.date[4:6]), int(race.date[6:8])).toordinal()
+    except (ValueError, TypeError):
+        date_ord = _dt.date.today().toordinal()
+    for r in runners:
+        r["career"] = F.career_asof(m.get("horses", {}).get(r.get("horse_id") or ""), date_ord)
     race_d = dict(surface=race.surface, distance=race.distance, venue=race.venue, condition=race.condition,
                   heads=race.heads, cls=race.cls, grade=race.grade, name=race.name, turn=race.turn)
-    ctx = F.race_context(race_d, runners)
+    ctx = F.race_context(race_d, runners, day)
     feats = [F.runner_features(r, ctx, m["stats"]) for r in runners]
     X = pd.DataFrame(feats)[m["meta"]["features"]]
     raw = m["win"].predict(X)

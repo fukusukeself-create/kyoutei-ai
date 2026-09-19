@@ -134,6 +134,7 @@ def main():
     info["heads_band"] = pd.cut(info.heads, [0, 10, 14, 99], labels=["〜10頭", "11〜14頭", "15頭〜"]).astype(str)
     info["cls_band"] = pd.cut(info.cls_rank, [-1, 0.5, 1.2, 2.5, 9], labels=["新馬・未勝利", "1勝", "2勝・3勝", "OP・重賞"]).astype(str)
     df = df.merge(info[["race_id", "surface", "heads_band", "cls_band"]], on="race_id", how="left")
+    df["odds_band"] = pd.cut(df.odds, [0, 10, 20, 40, 1e9], labels=["〜10倍", "10〜20倍", "20〜40倍", "40倍〜"]).astype(str)
     for col, val in PRE_EXCLUDE:
         df = df[df[col] != val]
     fit, test = df[df.race_id.isin(fit.race_id)], df[df.race_id.isin(test.race_id)]
@@ -166,7 +167,7 @@ def main():
     print("\n== 条件別 (採用券種・下限以上) ==")
     for kind, v in policy.items():
         fk, tk = fit[(fit.kind == kind) & (fit.ev >= v["threshold"])], test[(test.kind == kind) & (test.ev >= v["threshold"])]
-        for col in ("surface", "heads_band", "cls_band"):
+        for col in ("surface", "heads_band", "cls_band", "odds_band"):
             for val in sorted(fk[col].dropna().unique()):
                 f, t = stat(fk[fk[col] == val]), stat(tk[tk[col] == val])
                 flag = ""

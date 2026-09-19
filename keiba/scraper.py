@@ -30,9 +30,8 @@ HEADERS = {
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
         "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
     ),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    # Accept と Referer を付けるとアクセス集中時に中身の無い 400 が返りやすい (検証済み) ので付けない
     "Accept-Language": "ja,ja-JP;q=0.9,en-US;q=0.8,en;q=0.7",
-    "Referer": "https://race.netkeiba.com/",
 }
 
 # 場コード (race_id の 5〜6桁目)
@@ -420,7 +419,7 @@ def fetch_odds(race_id: str, kind: str) -> dict[str, float]:
     t = ODDS_TYPES[kind]
     url = f"{BASE}/api/api_get_jra_odds.html?race_id={race_id}&type={t}&action=init"
     try:
-        res = _session.get(url, timeout=12, headers={**HEADERS, "Referer": f"{BASE}/odds/index.html?race_id={race_id}"})
+        res = _session.get(url, timeout=12, headers=HEADERS)
         data = res.json()
     except Exception:
         return {}
@@ -462,8 +461,9 @@ def fetch_result(race_id: str) -> Optional[Result]:
         tds = [_text(td) for td in tr.select("td")]
         if len(tds) < 11:
             continue
-        order.append(dict(finish=_to_int(tds[0]), umaban=_to_int(tds[2]), name=tds[3],
-                          time=tds[7], margin=tds[8], ninki=_to_int(tds[9]), odds=_to_float(tds[10])))
+        order.append(dict(finish=_to_int(tds[0]), waku=_to_int(tds[1]), umaban=_to_int(tds[2]), name=tds[3],
+                          time=tds[7], margin=tds[8], ninki=_to_int(tds[9]), odds=_to_float(tds[10]),
+                          passing=tds[12] if len(tds) > 12 else ""))
     if not order or order[0]["finish"] != 1:
         return None
     payouts: dict[str, list[tuple[str, int]]] = {}

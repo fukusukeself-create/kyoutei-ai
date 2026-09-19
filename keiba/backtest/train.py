@@ -54,10 +54,28 @@ def _with_past(runners: pd.DataFrame) -> list[dict]:
     return rows
 
 
-def build_rows(races: pd.DataFrame, runners: pd.DataFrame, stats: dict) -> pd.DataFrame:
+def _date_ord(d: str) -> int:
+    import datetime as _dt
+    return _dt.date(int(d[:4]), int(d[4:6]), int(d[6:8])).toordinal()
+
+
+def build_rows(races: pd.DataFrame, runners: pd.DataFrame, stats: dict, career: dict | None = None,
+               career_seed: dict | None = None) -> pd.DataFrame:
+    """特徴量の行を作る。日付順に処理し、馬の通算 (career) と当日の傾向は「そのレースより前」の情報だけで作る。
+    career を渡すとその dict を更新しながら使う (学習→検証と続けて呼べる)。"""
     rows = []
     race_map = races.set_index("race_id").to_dict("index")
-    for rid, grp in runners.groupby("race_id", sort=False):
+    career = career if career is not None else {}
+    if career_seed:
+        for k, v in career_seed.items():
+            career.setdefault(k, json.loads(json.dumps(v)))
+    order = races.sort_values(["date", "venue", "rno"])[["race_id", "date", "venue", "rno"]]
+    groups = {rid: g for rid, g in runners.groupby("race_id", sort=False)}
+    day_state: dict[tuple, list] = {}
+    for rid, date, venue, rno in order.itertuples(index=False):
+        grp = groups.get(rid)
+        if grp is None:
+            continue
         race = race_map[rid]
         rs = []
         for d in grp.to_dict("records"):
@@ -65,8 +83,10 @@ def build_rows(races: pd.DataFrame, runners: pd.DataFrame, stats: dict) -> pd.Da
                 d["past"] = json.loads(d.get("past") or "[]")
             except json.JSONDecodeError:
                 d["past"] = []
+            d["career"] = F.career_asof(career.get(d.get("horse_id") or ""), _date_ord(date))
             rs.append(d)
-        ctx = F.race_context(race, rs)
+        day = F.day_bias(day_state.get((date, venue), []))
+        ctx = F.race_context(race, rs, day)
         mk = F.market_features({d["umaban"]: d.get("odds") for d in rs})
         for d in rs:
             f = F.runner_features(d, ctx, stats)
@@ -74,6 +94,18 @@ def build_rows(races: pd.DataFrame, runners: pd.DataFrame, stats: dict) -> pd.Da
             f.update(race_id=rid, date=race["date"], umaban_id=d["umaban"], finish=d["finish"], odds=d["odds"],
                      ninki=d["ninki"], is_win=int(d["finish"] == 1), is_top3=int(d["finish"] <= 3))
             rows.append(f)
+        # 出走後: 通算と当日傾向を更新
+        for d in rs:
+            hid = d.get("horse_id") or ""
+            if not hid or not d.get("finish"):
+                continue
+            ti = F.time_index(stats, race["venue"], race["surface"], race["distance"], race["condition"], F.time_sec(d.get("time") or ""))
+            F.career_update(career.setdefault(hid, {}), race["surface"], int(d["finish"]), ti, _date_ord(date))
+        winner = next((d for d in rs if d.get("finish") == 1), None)
+        if winner:
+            day_state.setdefault((date, venue), []).append(dict(
+                winner_style=winner.get("style"), winner_waku=winner.get("waku"), heads=len(rs),
+                top3_wakus=[d.get("waku") for d in rs if d.get("finish") and d["finish"] <= 3 and d.get("waku")]))
     return pd.DataFrame(rows)
 
 
@@ -174,7 +206,37 @@ def fit(train: pd.DataFrame, target: str, rounds: int | None = None, feats: list
     return booster
 
 
-def predict_market_base(booster: lgb.Booster, df: pd.DataFrame, feats: list[str]) -> np.ndarray:
+class Ensemble:
+    """同じ設定・別シードの Booster の平均 (raw_score)。save_model は各メンバーを連番で保存する。"""
+    def __init__(self, members):
+        self.members = members
+        self.rounds_used = members[0].rounds_used
+
+    def predict(self, X, raw_score=False):
+        return np.mean([m.predict(X, raw_score=raw_score) for m in self.members], axis=0)
+
+    def feature_importance(self, kind):
+        return np.mean([m.feature_importance(kind) for m in self.members], axis=0)
+
+    def save_model(self, path):
+        base, ext = os.path.splitext(path)
+        for i, m in enumerate(self.members):
+            m.save_model(path if i == 0 else f"{base}_{i}{ext}")
+
+
+def fit_ensemble(train, target, feats, market_base, seeds=(7, 11, 23)):
+    members = []
+    rounds = None
+    for sd in seeds:
+        PARAMS["seed"] = sd
+        m = fit(train, target, rounds=rounds, feats=feats, market_base=market_base)
+        rounds = m.rounds_used   # 木の本数は最初のシードで決めたものを使い回す
+        members.append(m)
+    PARAMS["seed"] = 7
+    return Ensemble(members)
+
+
+def predict_market_base(booster, df: pd.DataFrame, feats: list[str]) -> np.ndarray:
     z = market_logit(df) + booster.predict(df[feats], raw_score=True)
     return 1.0 / (1.0 + np.exp(-z))
 
@@ -199,8 +261,9 @@ def main():
         if tr_r.empty or va_races.empty:
             continue
         stats = F.build_stats(_with_past(tr_r))
-        df_tr = build_rows(races[races.date < start], tr_r, stats)
-        df_va = build_rows(va_races, runners[runners.race_id.isin(va_races.race_id)], stats)
+        career: dict = {}
+        df_tr = build_rows(races[races.date < start], tr_r, stats, career)
+        df_va = build_rows(va_races, runners[runners.race_id.isin(va_races.race_id)], stats, career)
         top3_m = fit(df_tr, "is_top3")
         if args.objective == "rank":
             win_m, temp = fit_rank(df_tr)
@@ -211,7 +274,7 @@ def main():
             df_va["p_raw"] = win_m.predict(df_va[F.FEATURES])
             df_va["p_pure"] = norm_in_race(df_va, "p_raw")
         MF = F.FEATURES + F.MARKET_FEATURES
-        mkt_m = fit(df_tr, "is_win", feats=MF, market_base=True)
+        mkt_m = fit_ensemble(df_tr, "is_win", MF, True)
         df_va["p_raw_mkt"] = predict_market_base(mkt_m, df_va, MF)
         df_va["p_model"] = norm_in_race(df_va, "p_raw_mkt")     # 以降の検証・賭け方比較は市場補正モデルで
         df_va["p_top3"] = top3_m.predict(df_va[F.FEATURES])
@@ -256,9 +319,14 @@ def main():
 
     # 本番用: 全期間で学習
     stats_all = F.build_stats(_with_past(runners))
-    df_all = build_rows(races, runners, stats_all)
+    career_all: dict = {}
+    os.makedirs(args.out, exist_ok=True)
+    df_all = build_rows(races, runners, stats_all, career_all)
+    # 本番用: 馬ごとの通算 (最新時点)。dates は直近12走の日付序数
+    with open(os.path.join(args.out, "horses.json"), "w", encoding="utf-8") as fp:
+        json.dump(career_all, fp, ensure_ascii=False, separators=(",", ":"))
     top3_all = fit(df_all, "is_top3")
-    mkt_all = fit(df_all, "is_win", feats=F.FEATURES + F.MARKET_FEATURES, market_base=True)
+    mkt_all = fit_ensemble(df_all, "is_win", F.FEATURES + F.MARKET_FEATURES, True)
     temperature = None
     if args.objective == "rank":
         win_all, temperature = fit_rank(df_all)
@@ -273,7 +341,7 @@ def main():
     with open(os.path.join(args.out, "stats.json"), "w", encoding="utf-8") as fp:
         json.dump(stats_all, fp, ensure_ascii=False, separators=(",", ":"))
     with open(os.path.join(args.out, "meta.json"), "w", encoding="utf-8") as fp:
-        json.dump(dict(features=F.FEATURES, market_features=F.MARKET_FEATURES, market_base=True, categorical=F.CATEGORICAL, metrics=metrics,
+        json.dump(dict(features=F.FEATURES, market_features=F.MARKET_FEATURES, market_base=True, ensemble=3, categorical=F.CATEGORICAL, metrics=metrics,
                        objective=args.objective, temperature=temperature,
                        data_period=[str(races.date.min()), str(races.date.max())], races=int(len(races))),
                   fp, ensure_ascii=False, indent=1)

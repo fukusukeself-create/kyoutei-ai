@@ -36,6 +36,12 @@ FEATURES = [
     # 展開・条件替わり (ダートで効きやすい)
     "early_pos", "last_early_pos", "turf_to_dirt", "dirt_to_turf", "first_surface", "dist_change", "n_same_surf_runs",
     "same_surf_tidx", "jockey_s_win", "trainer_s_win", "sire_wet_win", "front_pressure",
+    # 休み明け実績・乗り替わり・斤量/馬体重の変化
+    "fresh_n", "fresh_top3", "second_n", "second_top3", "jockey_change", "jockey_up", "weight_change", "bw_trend",
+    # 馬の通算 (収集した全レースからの集計。出走日より前の分だけ)
+    "car_n", "car_win", "car_top3", "car_best_tidx", "car_mean_tidx", "car_days_since", "car_n_180d", "car_surf_n", "car_surf_top3",
+    # 当日の馬場傾向 (同じ日・同じ場で先に終わったレースから)
+    "day_done", "day_front_win", "day_inner_win", "day_inner_top3",
     # 血統・人
     "sire_win", "sire_top3", "sire_n", "sire_sb_win", "sire_sb_top3", "sire_sb_n",
     "damsire_win", "damsire_top3", "damsire_s_win", "damsire_s_n",
@@ -95,6 +101,31 @@ def interval_weeks(interval: str, rest_note: str) -> Optional[int]:
     return None
 
 
+def parse_rest_record(text: str) -> dict:
+    """"3ヵ月休養 / 鉄砲 [1.0.0.3] / 2走目 [0.1.0.0]" → 鉄砲 (休み明け初戦) と 2走目 の [1着.2着.3着.着外] 回数。"""
+    out = {}
+    for key, name in (("鉄砲", "fresh"), ("走目", "second")):
+        m = re.search(key + r"\s*\[(\d+)\.(\d+)\.(\d+)\.(\d+)\]", text or "")
+        if m:
+            a, b, c, d = map(int, m.groups())
+            out[name + "_n"] = a + b + c + d
+            out[name + "_top3"] = a + b + c
+    return out
+
+
+def jockey_same(short: str, full: str) -> bool:
+    """出馬表の略名 (鮫島駿) が馬柱の氏名 (鮫島克駿) に順番どおり含まれるか。"""
+    short = re.sub(r"[▲△☆★◇]", "", short or "")
+    full = full or ""
+    if not short or not full:
+        return False
+    i = 0
+    for ch in full:
+        if i < len(short) and ch == short[i]:
+            i += 1
+    return i == len(short)
+
+
 def parse_body_weight(text: str) -> tuple[Optional[float], Optional[float]]:
     m = re.search(r"(\d{3})\s*\(\s*([+\-]?\d+)\s*\)", text or "")
     if m:
@@ -152,8 +183,9 @@ def _perf(p: dict) -> Optional[float]:
     return 0.55 * q + 0.45 * m_part
 
 
-def race_context(race: dict, runners: list[dict]) -> dict:
-    """レース単位で共有する値。race: surface, distance, venue, condition, heads, cls, grade, name, turn"""
+def race_context(race: dict, runners: list[dict], day: Optional[dict] = None) -> dict:
+    """レース単位で共有する値。race: surface, distance, venue, condition, heads, cls, grade, name, turn。
+    day: 当日その場で先に終わったレースの傾向 (day_bias の戻り)。"""
     styles = [r.get("style") or "" for r in runners]
     weights = [r.get("weight") for r in runners if r.get("weight")]
     return dict(
@@ -171,6 +203,7 @@ def race_context(race: dict, runners: list[dict]) -> dict:
         surface_str=race.get("surface", ""),
         venue_str=race.get("venue", ""),
         cond_str=race.get("condition", ""),
+        day=day or {},
     )
 
 
@@ -301,7 +334,48 @@ def runner_features(r: dict, ctx: dict, stats: dict) -> dict:
             st_.append(ti)
     f["same_surf_tidx"] = max(st_) if st_ else nan
     f["front_pressure"] = ctx["n_front"] / max(1, ctx["heads"])
+    rr = parse_rest_record(r.get("rest_note") or "")
+    for k in ("fresh_n", "fresh_top3", "second_n", "second_top3"):
+        f[k] = rr.get(k, nan)
+    if p0:
+        f["jockey_change"] = 0 if jockey_same(r.get("jockey") or "", p0.get("jockey") or "") else 1
+        f["weight_change"] = (float(r.get("weight") or 0) - float(p0["weight"])) if p0.get("weight") and r.get("weight") else nan
+        bw_last, _ = parse_body_weight(p0.get("body_weight") or "")
+        bw_now, _ = parse_body_weight(r.get("body_weight") or "")
+        f["bw_trend"] = (bw_now - bw_last) if bw_now and bw_last else nan
+    else:
+        f["jockey_change"] = 0
+        f["weight_change"] = nan
+        f["bw_trend"] = nan
+    # 乗り替わりで騎手の勝率がどれだけ上がるか (前走騎手が表に無ければ 0)
     bw_, bt_ = stats.get("base_win", 0.08), stats.get("base_top3", 0.24)
+    if p0 and f["jockey_change"]:
+        prev_full = p0.get("jockey") or ""
+        prev_key = next((k for k in stats.get("jockey", {}) if k and jockey_same(k, prev_full)), None)
+        cur_key = re.sub(r"[▲△☆★◇]", "", r.get("jockey") or "")
+        cur_rate, _ = _rate(stats.get("jockey", {}), cur_key, "win", bw_)
+        prev_rate, _ = _rate(stats.get("jockey", {}), prev_key or "", "win", bw_)
+        f["jockey_up"] = cur_rate - prev_rate
+    else:
+        f["jockey_up"] = 0.0
+    # 通算 (呼び出し側が r["career"] に出走日より前の集計を入れる)
+    car = r.get("career") or {}
+    f["car_n"] = car.get("n", 0)
+    f["car_win"] = car["wins"] / car["n"] if car.get("n") else nan
+    f["car_top3"] = car["top3"] / car["n"] if car.get("n") else nan
+    f["car_best_tidx"] = car.get("best_tidx", nan)
+    f["car_mean_tidx"] = (car["sum_tidx"] / car["n_tidx"]) if car.get("n_tidx") else nan
+    f["car_days_since"] = car.get("days_since", nan)
+    f["car_n_180d"] = car.get("n_180d", 0)
+    sk = "surf_" + ctx["surface_str"]
+    f["car_surf_n"] = car.get(sk + "_n", 0)
+    f["car_surf_top3"] = (car[sk + "_top3"] / car[sk + "_n"]) if car.get(sk + "_n") else nan
+    # 当日の傾向 (ctx["day"] に呼び出し側が入れる)
+    day = ctx.get("day") or {}
+    f["day_done"] = day.get("done", 0)
+    f["day_front_win"] = day.get("front_win", nan)
+    f["day_inner_win"] = day.get("inner_win", nan)
+    f["day_inner_top3"] = day.get("inner_top3", nan)
     sire, damsire = r.get("sire") or "", r.get("damsire") or ""
     sb_key = f"{sire}|{ctx['surface_str']}|{ctx['band']}"
     f["sire_win"], f["sire_n"] = _rate(stats.get("sire", {}), sire, "win", bw_)
@@ -406,3 +480,46 @@ def market_features(odds_by_umaban: dict[int, Optional[float]]) -> dict[int, dic
     n = len(order)
     return {u: dict(mkt_logp=math.log(p[u]), mkt_rank=(order.index(u) + 1) / n, mkt_top_gap=top - math.log(p[u]),
                     mkt_n=len(valid)) for u in odds_by_umaban}
+
+
+# ---------------------------------------------------------------- 当日の馬場傾向・馬の通算 (学習と本番で同じ計算)
+def day_bias(finished: list[dict]) -> dict:
+    """finished: その日・その場で先に終わったレースの [{winner_style, winner_waku, heads, top3_wakus}]。
+    先行 (逃/先) の勝ち割合、内枠 (1〜3枠) の勝ち割合と3着内割合 (期待値 3/8 で割って相対化)。"""
+    n = len(finished)
+    if not n:
+        return dict(done=0)
+    front = sum(1 for x in finished if x.get("winner_style") in ("逃", "先"))
+    inner = sum(1 for x in finished if (x.get("winner_waku") or 9) <= 3)
+    t3 = [w for x in finished for w in (x.get("top3_wakus") or [])]
+    inner3 = sum(1 for w in t3 if w <= 3) / len(t3) if t3 else None
+    return dict(done=n, front_win=front / n, inner_win=inner / n, inner_top3=(inner3 / 0.375) if inner3 is not None else float("nan"))
+
+
+def career_update(car: dict, surface: str, finish: int, tidx: Optional[float], date_ord: int) -> None:
+    """馬の通算集計を1走ぶん更新する (出走後に呼ぶ)。"""
+    car["n"] = car.get("n", 0) + 1
+    car["wins"] = car.get("wins", 0) + (1 if finish == 1 else 0)
+    car["top3"] = car.get("top3", 0) + (1 if finish <= 3 else 0)
+    if tidx is not None and -6 < tidx < 6:
+        car["sum_tidx"] = car.get("sum_tidx", 0.0) + tidx
+        car["n_tidx"] = car.get("n_tidx", 0) + 1
+        car["best_tidx"] = max(car.get("best_tidx", -9.0), tidx)
+    sk = "surf_" + surface
+    car[sk + "_n"] = car.get(sk + "_n", 0) + 1
+    car[sk + "_top3"] = car.get(sk + "_top3", 0) + (1 if finish <= 3 else 0)
+    dates = car.setdefault("dates", [])
+    dates.append(date_ord)
+    if len(dates) > 12:
+        del dates[:-12]
+
+
+def career_asof(car: Optional[dict], date_ord: int) -> dict:
+    """出走日時点の派生値 (直近からの日数・180日以内の出走数) を付けて返す。"""
+    if not car:
+        return {}
+    out = {k: v for k, v in car.items() if k != "dates"}
+    dates = car.get("dates") or []
+    out["days_since"] = (date_ord - dates[-1]) if dates else float("nan")
+    out["n_180d"] = sum(1 for d in dates if date_ord - d <= 180)
+    return out
