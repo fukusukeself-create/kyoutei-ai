@@ -50,6 +50,8 @@ def main():
     import argparse
     ap = argparse.ArgumentParser()
     ap.add_argument("--thresholds", default=",".join(map(str, THRESHOLDS)), help="動作確認用に下げられる")
+    ap.add_argument("--prob-col", default="p_model", help="使う確率の列 (p_model / p_blend / p_pure)")
+    ap.add_argument("--out", default=OUT)
     args = ap.parse_args()
     thresholds = [float(x) for x in args.thresholds.split(",")]
     oos = pd.read_csv(OOS, dtype={"race_id": str})
@@ -66,7 +68,7 @@ def main():
         n_races += 1
         year = str(grp.date.iloc[0])[:4]
         um = grp.umaban_id.astype(int).tolist()
-        p_b = dict(zip(um, grp.p_model))
+        p_b = dict(zip(um, grp[args.prob_col]))
         p_m = dict(zip(um, grp.p_market))
         odds = dict(zip(um, grp.odds))
         cb, cm = strategy.combo_probs(p_b), strategy.combo_probs(p_m)
@@ -127,20 +129,6 @@ def main():
     for kind, v in policy.items():
         print(f"  {kind}: ev >= {v['threshold']}  (fit {v['fit']['bets']}点 回収 {v['fit']['roi']*100:.1f}%)")
 
-    def portfolio(d: pd.DataFrame) -> dict:
-        parts = [d[(d.kind == k) & (d.ev >= v["threshold"])] for k, v in policy.items()]
-        return stat(apply_exclude(pd.concat(parts)) if parts else d.iloc[0:0])
-
-    result = dict(
-        policy={k: dict(threshold=v["threshold"], pmin=v["pmin"], exclude=v.get("exclude", [])) for k, v in policy.items()},
-        max_points=MAX_POINTS, takeout=TAKEOUT, pmin=PMIN,
-        fit=portfolio(fit), test=portfolio(test),
-        fit_period=[str(oos[oos.date.astype(str).str[:4] <= "2025"].date.min()), str(oos[oos.date.astype(str).str[:4] <= "2025"].date.max())],
-        test_period=[str(oos[oos.date.astype(str).str[:4] >= "2026"].date.min()), str(oos[oos.date.astype(str).str[:4] >= "2026"].date.max())],
-        test_by_kind={k: stat(apply_exclude(test[(test.kind == k) & (test.ev >= v["threshold"])])) for k, v in policy.items()},
-        grid=grid, races_fit=int(fit.race_id.nunique()) if not fit.empty else 0,
-        races_test=int(test.race_id.nunique()) if not test.empty else 0,
-    )
     # ---- 採用した券種について、条件別 (芝ダ / 頭数 / クラス) の成績。選定期間で回収率 85% 未満の条件は外す
     con = sqlite3.connect(DB)
     info = pd.read_sql("SELECT race_id, surface, heads, cls, grade, name FROM races WHERE fetched=1", con)
@@ -173,6 +161,20 @@ def main():
                 keep &= ~((d.kind == kind) & (d[col] == val))
         return d[keep]
 
+    def portfolio(d: pd.DataFrame) -> dict:
+        parts = [d[(d.kind == k) & (d.ev >= v["threshold"])] for k, v in policy.items()]
+        return stat(apply_exclude(pd.concat(parts)) if parts else d.iloc[0:0])
+
+    result = dict(
+        policy={k: dict(threshold=v["threshold"], pmin=v["pmin"], exclude=v.get("exclude", [])) for k, v in policy.items()},
+        max_points=MAX_POINTS, takeout=TAKEOUT, pmin=PMIN,
+        fit=portfolio(fit), test=portfolio(test),
+        fit_period=[str(oos[oos.date.astype(str).str[:4] <= "2025"].date.min()), str(oos[oos.date.astype(str).str[:4] <= "2025"].date.max())],
+        test_period=[str(oos[oos.date.astype(str).str[:4] >= "2026"].date.min()), str(oos[oos.date.astype(str).str[:4] >= "2026"].date.max())],
+        test_by_kind={k: stat(apply_exclude(test[(test.kind == k) & (test.ev >= v["threshold"])])) for k, v in policy.items()},
+        grid=grid, races_fit=int(fit.race_id.nunique()) if not fit.empty else 0,
+        races_test=int(test.race_id.nunique()) if not test.empty else 0,
+    )
     # ---- 見送り無し: 全レースで「このレースで最も期待値の高い k 点」を買う
     print("\n== 見送り無し (全レースで期待値上位 k 点) ==")
     noskip_grid = []
@@ -200,10 +202,11 @@ def main():
     print("test :", result["test"])
     for k, v in result["test_by_kind"].items():
         print(f"  test {k}: {v}")
-    os.makedirs(os.path.dirname(OUT), exist_ok=True)
-    with open(OUT, "w", encoding="utf-8") as fp:
+    result["prob_col"] = args.prob_col
+    os.makedirs(os.path.dirname(args.out), exist_ok=True)
+    with open(args.out, "w", encoding="utf-8") as fp:
         json.dump(result, fp, ensure_ascii=False, indent=1)
-    print("saved", OUT)
+    print("saved", args.out)
 
 
 if __name__ == "__main__":
