@@ -38,8 +38,7 @@ FEATURES = [
     "same_surf_tidx", "jockey_s_win", "trainer_s_win", "sire_wet_win", "front_pressure",
     # 休み明け実績・乗り替わり・斤量/馬体重の変化
     "fresh_n", "fresh_top3", "second_n", "second_top3", "jockey_change", "jockey_up", "weight_change", "bw_trend",
-    # 馬の通算 (収集した全レースからの集計。出走日より前の分だけ)
-    "car_n", "car_win", "car_top3", "car_best_tidx", "car_mean_tidx", "car_days_since", "car_n_180d", "car_surf_n", "car_surf_top3",
+    # 馬の通算 (car_*) は足し引き実験で悪化したため学習に使わない (計算はしている)
     # 当日の馬場傾向 (同じ日・同じ場で先に終わったレースから)
     "day_done", "day_front_win", "day_inner_win", "day_inner_top3",
     # 血統・人
