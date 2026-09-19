@@ -450,10 +450,11 @@ with st.expander("📒 成績・答え合わせ (台帳)"):
 if meta and meta.get("metrics"):
     mt = meta["metrics"]
     with st.expander("📈 モデルの検証成績"):
-        st.caption(f"学習 {mt['train_period'][0]}〜{mt['train_period'][1]} ({mt['train_races']:,}レース) / 検証 {mt['valid_period'][0]}〜{mt['valid_period'][1]} ({mt['races']:,}レース)")
-        st.markdown(f"- 1番手の勝率: モデル {mt['top1_hit_model']*100:.1f}% / 市場 (1番人気) {mt['top1_hit_market']*100:.1f}%\n"
-                    f"- 対数損失 (低いほど良い): モデル {mt['logloss_model']:.3f} / 市場 {mt['logloss_market']:.3f} / 混合 {mt['logloss_blend']:.3f}\n"
-                    f"- 単勝 (期待値1.1以上のみ): 混合 {mt['tansho_blend_bets']}回 回収率 {(mt['tansho_blend_roi'] or 0)*100:.0f}% / 1番人気買い続け {(mt['tansho_fav_roi'] or 0)*100:.0f}%")
+        st.caption(f"時系列検証: 2025年前半・後半・2026年をそれぞれ「それ以前のデータだけで学習」して予想 / 検証 {mt['valid_period'][0]}〜{mt['valid_period'][1]} ({mt['races']:,}レース)")
+        st.markdown(f"- 本命の勝率: 統計モデル {mt['top1_hit_model']*100:.1f}% / 市場 (1番人気) {mt['top1_hit_market']*100:.1f}%\n"
+                    f"- 本命を単勝で買い続けた回収率: 統計モデル {mt['top1_roi_model']*100:.0f}% / 1番人気 {mt['top1_roi_market']*100:.0f}%\n"
+                    f"- 対数損失 (低いほど良い): 統計モデル {mt['logloss_model']:.3f} / 市場 {mt['logloss_market']:.3f}\n"
+                    f"- 単勝の期待値買い (統計モデルの勝率×オッズ 1.1以上): {mt['tansho_model_bets']:,}点 的中率 {(mt['tansho_model_hit'] or 0)*100:.1f}% 回収率 {(mt['tansho_model_roi'] or 0)*100:.0f}%")
         vp = (statmodel.load() or {}).get("value_policy")
         if vp and vp.get("policy"):
             st.markdown(f"**収支プラス狙い (期待値買い)** 券種ごとの期待値の下限は{vp['fit_period'][0][:4]}年の予想で決め、{vp['test_period'][0][:4]}年で検証")
@@ -464,6 +465,18 @@ if meta and meta.get("metrics"):
                      for k, v in vp["policy"].items()]
             st.dataframe(pd.DataFrame(rows_), hide_index=True, use_container_width=True)
         elif vp:
-            st.markdown("**収支プラス狙い**: 検証で回収率100%を超える券種・下限がありませんでした。")
+            st.markdown("**収支プラス狙い**: 検証で回収率100%を超える券種・期待値の下限はありませんでした。")
+            g = sorted(vp.get("grid", []), key=lambda r: -r["test"]["roi"])[:8]
+            if g:
+                st.dataframe(pd.DataFrame([{"券種": r["kind"], "期待値の下限": r["threshold"], "検証 点数": r["test"]["bets"],
+                                            "的中率": f"{r['test']['hit_rate']*100:.1f}%", "回収率": f"{r['test']['roi']*100:.0f}%"} for r in g]),
+                             hide_index=True, use_container_width=True)
+        ns = (vp or {}).get("noskip")
+        if ns:
+            st.markdown(f"**見送り無し**: 全レースで買った中で最も損の少なかった買い方は「{ns['label']}」。"
+                        f"検証 {ns['test']['races']:,}レース: {ns['test']['bets']:,}点 的中率 {ns['test']['hit_rate']*100:.1f}% 回収率 {ns['test']['roi']*100:.0f}% 収支 {ns['test']['profit']:+,}円 (1点100円)")
+            g = sorted(ns.get("grid", []), key=lambda r: -r["test"]["roi"])[:8]
+            st.dataframe(pd.DataFrame([{"買い方": r["label"], "検証 点数": r["test"]["bets"], "的中率": f"{r['test']['hit_rate']*100:.1f}%",
+                                        "回収率": f"{r['test']['roi']*100:.0f}%"} for r in g]), hide_index=True, use_container_width=True)
 
 st.caption("データ: netkeiba。予想は参考情報であり、購入は自己責任で。20歳未満の馬券購入は法律で禁止されています。")
