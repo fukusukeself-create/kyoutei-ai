@@ -214,12 +214,13 @@ race_labels = [f"{i}R" for i in range(1, 13)]
 if ss.get("race") not in race_labels:
     ss["race"] = "11R"
 race_label = st.pills("レース", race_labels, selection_mode="single", key="race")
-mode = st.pills("買い方", ["2点勝負", "フォーメーション"], selection_mode="single", default="2点勝負", key="mode") or "2点勝負"
+mode = st.pills("買い方", ["収支プラス狙い", "フォーメーション", "2点勝負"], selection_mode="single", default="収支プラス狙い", key="mode") or "収支プラス狙い"
 if mode == "フォーメーション":
     style = st.pills("スタイル", list(strategy.STYLES), selection_mode="single", default="バランス", key="style") or "バランス"
 else:
     style = "バランス"
 policy = (statmodel.load() or {}).get("policy") or None
+value_policy = (statmodel.load() or {}).get("value_policy") or None
 
 m_sel = by_venue.get(venue or "")
 rno = int((race_label or "11R").rstrip("R"))
@@ -264,7 +265,40 @@ if res and res["race_id"] == (rs.race_id if rs else None):
     """, unsafe_allow_html=True)
 
     # --- 買い目
-    if mode == "2点勝負":
+    if mode == "収支プラス狙い":
+        vb = strategy.value_bets(plan.win_probs, odds, value_policy)
+        pol = value_policy or strategy.DEFAULT_VALUE_POLICY
+        st.markdown('<div class="sec">買い目 (収支プラス狙い・期待値買い)</div>', unsafe_allow_html=True)
+        all_v = [t for ts in vb.values() for t in ts]
+        if not has_odds:
+            st.warning("オッズが未発売のため期待値を出せません。発走が近づいてから「オッズ更新」を押してください。")
+        elif not all_v:
+            st.info("このレースは見送り。市場より十分に確率が高い (期待値が下限を超える) 組がありません。")
+        for kind, ts in vb.items():
+            if not ts:
+                continue
+            rule = pol["policy"][kind]
+            sm = strategy.summarize(ts)
+            st.markdown(f'<div class="note"><b>{kind}</b> {sm["points"]}点 (期待値 {rule["threshold"]:.1f} 以上) / 的中率 {sm["hit"]*100:.0f}% / 期待回収率 {sm["ev"]*100:.0f}%</div>',
+                        unsafe_allow_html=True)
+            if kind in ("三連複", "三連単"):
+                st.markdown(f'<div class="fm-card"><div class="fm-title">{kind}フォーメーション ({len(ts)}点)</div>'
+                            f'<div class="fm-text">{strategy.exact_formation(kind, [t.combo for t in ts]).replace(" / ", "<br>")}</div></div>',
+                            unsafe_allow_html=True)
+            for t in ts:
+                st.markdown(f'<div class="tk good"><span class="cmb">{kind} {t.label}</span><span class="meta">{t.prob*100:.1f}% / {t.odds:.1f}倍 / 期待値 {t.ev:.2f}</span></div>',
+                            unsafe_allow_html=True)
+        total = len(all_v)
+        if value_policy and value_policy.get("test", {}).get("bets"):
+            tv = value_policy["test"]
+            st.markdown(f'<div class="note">この買い方の検証 ({value_policy["test_period"][0][:4]}年・学習に使っていない {value_policy["races_test"]:,}レース): '
+                        f'{tv["bets"]:,}点 買って 的中率 {tv["hit_rate"]*100:.0f}% / 回収率 {tv["roi"]*100:.0f}% / 収支 {tv["profit"]:+,}円 (1点100円)。'
+                        f'連系は過去オッズが無いため単勝オッズからの近似で検証している。</div>', unsafe_allow_html=True)
+        elif not value_policy:
+            st.markdown('<div class="note">期待値の下限は暫定値 (検証前)。学習が終わると検証で決めた値に置き換わる。</div>', unsafe_allow_html=True)
+        st.markdown('<div class="note">同額で買う。賭け金を増やすと自分でオッズを下げて優位が消えるため 1点1,000円程度まで。期待値が高い組ほど儲かる関係は無いので配分は変えない。</div>', unsafe_allow_html=True)
+        plan.tickets = vb
+    elif mode == "2点勝負":
         two, reason = strategy.best_two(plan.win_probs, odds, policy)
         st.markdown('<div class="sec">買い目 (2点勝負)</div>', unsafe_allow_html=True)
         st.markdown(f'<div class="note">{reason}</div>', unsafe_allow_html=True)
@@ -295,7 +329,7 @@ if res and res["race_id"] == (rs.race_id if rs else None):
     else:
         st.markdown(f'<div class="sec">買い目 ({plan.style})</div>', unsafe_allow_html=True)
         total = 0
-    for kind in (() if mode == "2点勝負" else ("単勝", "馬連", "ワイド")):
+    for kind in (("単勝", "馬連", "ワイド") if mode == "フォーメーション" else ()):
         ts = plan.tickets.get(kind, [])
         if not ts:
             if kind == "単勝":
@@ -310,7 +344,7 @@ if res and res["race_id"] == (rs.race_id if rs else None):
             meta_t = f"{t.prob*100:.1f}%" + (f" / {t.odds:.1f}倍 / 期待値 {t.ev:.2f}" if t.odds else " / オッズ未発売")
             st.markdown(f'<div class="tk{good}"><span class="cmb">{kind} {t.label}</span><span class="meta">{meta_t}</span></div>',
                         unsafe_allow_html=True)
-    if mode != "2点勝負":
+    if mode == "フォーメーション":
         for kind3 in ("三連複", "三連単"):
             fm = strategy.formation(kind3, plan.win_probs, odds, plan.style)
             plan.tickets[kind3] = fm["tickets"]
@@ -419,6 +453,17 @@ if meta and meta.get("metrics"):
         st.markdown(f"- 1番手の勝率: モデル {mt['top1_hit_model']*100:.1f}% / 市場 (1番人気) {mt['top1_hit_market']*100:.1f}%\n"
                     f"- 対数損失 (低いほど良い): モデル {mt['logloss_model']:.3f} / 市場 {mt['logloss_market']:.3f} / 混合 {mt['logloss_blend']:.3f}\n"
                     f"- 単勝 (期待値1.1以上のみ): 混合 {mt['tansho_blend_bets']}回 回収率 {(mt['tansho_blend_roi'] or 0)*100:.0f}% / 1番人気買い続け {(mt['tansho_fav_roi'] or 0)*100:.0f}%")
+        vp = (statmodel.load() or {}).get("value_policy")
+        if vp and vp.get("policy"):
+            st.markdown(f"**収支プラス狙い (期待値買い)** 券種ごとの期待値の下限は{vp['fit_period'][0][:4]}年の予想で決め、{vp['test_period'][0][:4]}年で検証")
+            st.markdown(f"- 選定期間 {vp['races_fit']:,}レース: {vp['fit']['bets']:,}点 的中率 {vp['fit']['hit_rate']*100:.0f}% 回収率 {vp['fit']['roi']*100:.0f}%")
+            st.markdown(f"- 検証期間 {vp['races_test']:,}レース: {vp['test']['bets']:,}点 的中率 {vp['test']['hit_rate']*100:.0f}% 回収率 {vp['test']['roi']*100:.0f}% 収支 {vp['test']['profit']:+,}円")
+            rows_ = [{"券種": k, "期待値の下限": v["threshold"], "検証 点数": vp["test_by_kind"][k]["bets"],
+                      "的中率": f"{vp['test_by_kind'][k]['hit_rate']*100:.0f}%", "回収率": f"{vp['test_by_kind'][k]['roi']*100:.0f}%"}
+                     for k, v in vp["policy"].items()]
+            st.dataframe(pd.DataFrame(rows_), hide_index=True, use_container_width=True)
+        elif vp:
+            st.markdown("**収支プラス狙い**: 検証で回収率100%を超える券種・下限がありませんでした。")
         pol = (statmodel.load() or {}).get("policy")
         if pol:
             st.markdown(f"**2点勝負 (帯ごとに券種を切替)** 方針は{pol['fit_period'][0][:4]}年の予想で決め、{pol['test_period'][0][:4]}年で検証")

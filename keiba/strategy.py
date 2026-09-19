@@ -384,3 +384,40 @@ def formation(kind: str, win: dict[int, float], odds: dict[str, dict[str, float]
     sm = summarize(tickets)
     return dict(kind=kind, text=text, tickets=tickets, points=len(tickets), cover=sm["hit"], ev=sm["ev"],
                 target=target, max_points=max_points)
+
+
+# ---------------------------------------------------------------- 収支プラス狙い (期待値買い)
+# 点数は問わず、確率 × 実オッズ (期待値) が券種ごとの下限を超える組だけ買う。
+# 下限は backtest/profit.py が学習外の予想で決めて models/profit.json に書く。無ければ既定値。
+DEFAULT_VALUE_POLICY = {
+    "policy": {"単勝": {"threshold": 1.2, "pmin": 0.05}, "馬連": {"threshold": 1.2, "pmin": 0.02},
+               "ワイド": {"threshold": 1.2, "pmin": 0.05}, "三連複": {"threshold": 1.3, "pmin": 0.01}},
+    "max_points": 12,
+}
+
+
+def value_bets(win: dict[int, float], odds: dict[str, dict[str, float]] | None, policy: dict | None = None) -> dict[str, list[Ticket]]:
+    """券種 -> 期待値の高い順の買い目 (上限 max_points)。オッズが無い券種は空。"""
+    pol = policy or DEFAULT_VALUE_POLICY
+    odds = odds or {}
+    cands = candidates(win, odds)
+    # candidates は上位10までなので、期待値買いは全組から見直す
+    cp = combo_probs(win)
+    src = {"単勝": {(u,): p for u, p in win.items()}, "馬連": cp["umaren"], "馬単": cp["exacta"],
+           "ワイド": cp["wide"], "三連複": cp["trio"], "三連単": cp["trifecta"]}
+    out: dict[str, list[Ticket]] = {}
+    for kind, rule in pol["policy"].items():
+        table = odds.get(KIND_KEY[kind], {})
+        if not table:
+            out[kind] = []
+            continue
+        ts = []
+        for c, p in src[kind].items():
+            if p < rule["pmin"]:
+                continue
+            o = _odds_of(table, c)
+            if o and p * o >= rule["threshold"]:
+                ts.append(Ticket(kind, c, p, o))
+        ts.sort(key=lambda t: -(t.ev or 0))
+        out[kind] = ts[: pol.get("max_points", 12)]
+    return out
