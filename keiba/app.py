@@ -391,7 +391,7 @@ if res and res["race_id"] == (rs.race_id if rs else None):
     st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True,
                  column_config={"馬番": st.column_config.NumberColumn(width="small"), "印": st.column_config.TextColumn(width="small")})
     if est["engine"] == "統計+市場補正":
-        st.markdown('<div class="note">勝率は市場 (単勝オッズ) を土台に、馬柱・血統・騎手・時計の統計で補正したもの。期待値 = 勝率 × 単勝オッズで、1.0 超は市場が過小評価していると判断した馬。</div>', unsafe_allow_html=True)
+        st.markdown('<div class="note">勝率は市場 (単勝オッズ) を土台に、馬柱・血統・騎手・時計・展開の統計で補正し、補正のずれを検証で決めた比率に縮めたもの。期待値 = 勝率 × 単勝オッズで、1.0 超は市場が過小評価していると判断した馬。</div>', unsafe_allow_html=True)
     else:
         st.markdown('<div class="note">勝率は統計データのみから推定 (オッズ未発売のため市場補正なし)。期待値 = 勝率 × 単勝オッズ。</div>', unsafe_allow_html=True)
 

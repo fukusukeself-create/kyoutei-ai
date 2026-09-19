@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import sqlite3
 import sys
@@ -51,6 +52,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--thresholds", default=",".join(map(str, THRESHOLDS)), help="動作確認用に下げられる")
     ap.add_argument("--prob-col", default="p_model", help="使う確率の列 (p_model / p_blend / p_pure)")
+    ap.add_argument("--shrink", type=float, default=0.7,
+                    help="モデルの確率を市場との幾何平均で縮める比率 (1.0=縮めない)。モデルは市場からのずれを過大に見積もるため")
     ap.add_argument("--out", default=OUT)
     args = ap.parse_args()
     thresholds = [float(x) for x in args.thresholds.split(",")]
@@ -68,8 +71,13 @@ def main():
         n_races += 1
         year = str(grp.date.iloc[0])[:4]
         um = grp.umaban_id.astype(int).tolist()
-        p_b = dict(zip(um, grp[args.prob_col]))
         p_m = dict(zip(um, grp.p_market))
+        p_raw = dict(zip(um, grp[args.prob_col]))
+        if args.shrink < 1.0:
+            e = {u: math.exp(args.shrink * math.log(max(p_raw[u], 1e-6)) + (1 - args.shrink) * math.log(max(p_m.get(u, 1e-4), 1e-6))) for u in um}
+            z = sum(e.values()); p_b = {u: v / z for u, v in e.items()}
+        else:
+            p_b = p_raw
         odds = dict(zip(um, grp.odds))
         cb, cm = strategy.combo_probs(p_b), strategy.combo_probs(p_m)
         tables = {"単勝": ({(u,): p for u, p in p_b.items()}, None),
@@ -121,9 +129,10 @@ def main():
             grid.append(dict(kind=kind, threshold=k, fit=f, test=t))
             print(f"{kind} ev>={k:.1f}: fit {f['bets']:5d}点 的中{f['hit_rate']*100:5.1f}% 回収{f['roi']*100:6.1f}% | "
                   f"test {t['bets']:5d}点 的中{t['hit_rate']*100:5.1f}% 回収{t['roi']*100:6.1f}%")
-            if f["bets"] >= MIN_BETS_FIT and (best is None or f["roi"] > best[1]["roi"]):
+            # 選定期間で回収率100%以上になる下限のうち、最も低い (=点数が多く、ぶれが小さい) ものを採る
+            if f["bets"] >= MIN_BETS_FIT and f["roi"] >= 1.0 and best is None:
                 best = (k, f)
-        if best and best[1]["roi"] >= 1.0:
+        if best:
             policy[kind] = dict(threshold=best[0], pmin=PMIN[kind], fit=best[1])
     print("\n== 採用 (fit で回収率100%以上の券種と下限) ==")
     for kind, v in policy.items():
@@ -203,6 +212,7 @@ def main():
     for k, v in result["test_by_kind"].items():
         print(f"  test {k}: {v}")
     result["prob_col"] = args.prob_col
+    result["shrink"] = args.shrink
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
     with open(args.out, "w", encoding="utf-8") as fp:
         json.dump(result, fp, ensure_ascii=False, indent=1)

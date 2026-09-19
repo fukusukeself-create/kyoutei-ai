@@ -107,9 +107,14 @@ def predict(race: Race, win_odds: Optional[dict[str, float]] = None) -> Optional
         else:
             rawm = m["win_mkt"].predict(Xm)
         zm = float(sum(rawm)) or 1.0
-        probs = {u: float(p) / zm for u, p in zip(umabans, rawm)}
+        corrected = {u: float(p) / zm for u, p in zip(umabans, rawm)}
+        # モデルは市場からのずれを過大に見積もる (検証で確認) ので、市場との幾何平均で縮める
+        k = float(((m.get("value_policy") or {}).get("shrink")) or 0.7)
+        e = {u: math.exp(k * math.log(max(corrected[u], 1e-6)) + (1 - k) * math.log(max(market.get(u, 1e-4), 1e-6))) for u in umabans}
+        zz = sum(e.values())
+        probs = {u: v / zz for u, v in e.items()}
         engine = "統計+市場補正"
-        w = 1.0
+        w = 1.0 - k
     return dict(probs=probs, model_probs=model_p, market_probs=market, top3_probs=top3_p,
                 features={u: f for u, f in zip(umabans, feats)}, blend_w=w, engine=engine)
 
