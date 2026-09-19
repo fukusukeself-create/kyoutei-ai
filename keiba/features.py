@@ -51,8 +51,11 @@ def dist_band(d: int) -> int:
     return 3
 
 
+_FW = str.maketrans("０１２３４５６７８９", "0123456789")
+
+
 def class_rank(text: str) -> float:
-    t = text or ""
+    t = (text or "").translate(_FW)   # 出馬表のクラス表記は全角数字 (３勝クラス)
     if re.search(r"G1|GI\b|GＩ|ＧⅠ", t):
         return 6
     if re.search(r"G2|GII\b|GⅡ", t):
