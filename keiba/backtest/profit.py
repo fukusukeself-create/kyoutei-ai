@@ -36,7 +36,15 @@ TAKEOUT = {"単勝": 0.20, "複勝": 0.20, "馬連": 0.225, "ワイド": 0.225, 
 PMIN = {"単勝": 0.05, "複勝": 0.15, "馬連": 0.02, "ワイド": 0.05, "馬単": 0.01, "三連複": 0.01, "三連単": 0.003}
 THRESHOLDS = [1.0, 1.1, 1.2, 1.3, 1.5]
 MAX_POINTS = 12       # 1券種1レースあたりの上限点数 (期待値の高い順)
-MIN_BETS_FIT = 150    # 方針を選ぶのに最低限必要な賭け数
+MIN_BETS_FIT = 300    # 方針を選ぶのに最低限必要な賭け数
+# 採用に必要な選定期間の回収率。単勝は実オッズで検証できるが、連系は近似オッズなので余裕を持たせる
+MIN_ROI = {"単勝": 1.03}
+MIN_ROI_DEFAULT = 1.10
+# 新馬・未勝利は馬柱が薄く、どの検証でも回収率が低かったので、最初から買わない
+PRE_EXCLUDE = [("cls_band", "新馬・未勝利")]
+# 採用する券種。連系は過去の実オッズが無く近似オッズでの検証になり、結果が大きな払戻に左右されて
+# 年ごとに大きくぶれる (三連複 0% / 三連単 222% 等) ため、実オッズで検証できる単勝だけを採用する
+ADOPT_KINDS = ["単勝"]
 
 
 def payout_map(pay: dict, kind: str) -> dict[tuple, int]:
@@ -118,9 +126,22 @@ def main():
         mid = sorted(df.race_id.unique())[len(df.race_id.unique()) // 2]
         fit, test = df[df.race_id < mid], df[df.race_id >= mid]
 
+    con = sqlite3.connect(DB)
+    info = pd.read_sql("SELECT race_id, surface, heads, cls, grade, name FROM races WHERE fetched=1", con)
+    con.close()
+    import features as F
+    info["cls_rank"] = [F.class_rank(" ".join([str(a), str(b), str(c)])) for a, b, c in zip(info.cls, info.grade, info.name)]
+    info["heads_band"] = pd.cut(info.heads, [0, 10, 14, 99], labels=["〜10頭", "11〜14頭", "15頭〜"]).astype(str)
+    info["cls_band"] = pd.cut(info.cls_rank, [-1, 0.5, 1.2, 2.5, 9], labels=["新馬・未勝利", "1勝", "2勝・3勝", "OP・重賞"]).astype(str)
+    df = df.merge(info[["race_id", "surface", "heads_band", "cls_band"]], on="race_id", how="left")
+    for col, val in PRE_EXCLUDE:
+        df = df[df[col] != val]
+    fit, test = df[df.race_id.isin(fit.race_id)], df[df.race_id.isin(test.race_id)]
+    print(f"新馬・未勝利を除いた候補: fit {len(fit)} / test {len(test)}")
+
     grid = []
     policy = {}
-    print("\n== 券種 × 期待値の下限 (fit=方針を選ぶ期間 / test=検証) ==")
+    print("\n== 券種 × 期待値の下限 (fit=方針を選ぶ期間 / test=検証、新馬・未勝利を除く) ==")
     for kind in TAKEOUT:
         best = None
         for k in thresholds:
@@ -130,24 +151,17 @@ def main():
             print(f"{kind} ev>={k:.1f}: fit {f['bets']:5d}点 的中{f['hit_rate']*100:5.1f}% 回収{f['roi']*100:6.1f}% | "
                   f"test {t['bets']:5d}点 的中{t['hit_rate']*100:5.1f}% 回収{t['roi']*100:6.1f}%")
             # 選定期間で回収率100%以上になる下限のうち、最も低い (=点数が多く、ぶれが小さい) ものを採る
-            if f["bets"] >= MIN_BETS_FIT and f["roi"] >= 1.0 and best is None:
+            if f["bets"] >= MIN_BETS_FIT and f["roi"] >= MIN_ROI.get(kind, MIN_ROI_DEFAULT) and best is None:
                 best = (k, f)
-        if best:
+        if best and kind in ADOPT_KINDS:
             policy[kind] = dict(threshold=best[0], pmin=PMIN[kind], fit=best[1])
+        elif best:
+            print(f"  (参考) {kind}: ev >= {best[0]} は選定期間 {best[1]['roi']*100:.0f}% だが、近似オッズの検証なので採用しない")
     print("\n== 採用 (fit で回収率100%以上の券種と下限) ==")
     for kind, v in policy.items():
         print(f"  {kind}: ev >= {v['threshold']}  (fit {v['fit']['bets']}点 回収 {v['fit']['roi']*100:.1f}%)")
 
     # ---- 採用した券種について、条件別 (芝ダ / 頭数 / クラス) の成績。選定期間で回収率 85% 未満の条件は外す
-    con = sqlite3.connect(DB)
-    info = pd.read_sql("SELECT race_id, surface, heads, cls, grade, name FROM races WHERE fetched=1", con)
-    con.close()
-    import features as F
-    info["cls_rank"] = [F.class_rank(" ".join([str(a), str(b), str(c)])) for a, b, c in zip(info.cls, info.grade, info.name)]
-    info["heads_band"] = pd.cut(info.heads, [0, 10, 14, 99], labels=["〜10頭", "11〜14頭", "15頭〜"]).astype(str)
-    info["cls_band"] = pd.cut(info.cls_rank, [-1, 0.5, 1.2, 2.5, 9], labels=["新馬・未勝利", "1勝", "2勝・3勝", "OP・重賞"]).astype(str)
-    df = df.merge(info[["race_id", "surface", "heads_band", "cls_band"]], on="race_id", how="left")
-    fit, test = df[df.race_id.isin(fit.race_id)], df[df.race_id.isin(test.race_id)]
     excluded = {}
     print("\n== 条件別 (採用券種・下限以上) ==")
     for kind, v in policy.items():
@@ -175,7 +189,7 @@ def main():
         return stat(apply_exclude(pd.concat(parts)) if parts else d.iloc[0:0])
 
     result = dict(
-        policy={k: dict(threshold=v["threshold"], pmin=v["pmin"], exclude=v.get("exclude", [])) for k, v in policy.items()},
+        policy={k: dict(threshold=v["threshold"], pmin=v["pmin"], exclude=[list(x) for x in PRE_EXCLUDE] + v.get("exclude", [])) for k, v in policy.items()},
         max_points=MAX_POINTS, takeout=TAKEOUT, pmin=PMIN,
         fit=portfolio(fit), test=portfolio(test),
         fit_period=[str(oos[oos.date.astype(str).str[:4] <= "2025"].date.min()), str(oos[oos.date.astype(str).str[:4] <= "2025"].date.max())],

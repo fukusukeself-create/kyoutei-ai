@@ -49,6 +49,18 @@
   "best_tidx",
   "mean_tidx",
   "last_agari_idx",
+  "early_pos",
+  "last_early_pos",
+  "turf_to_dirt",
+  "dirt_to_turf",
+  "first_surface",
+  "dist_change",
+  "n_same_surf_runs",
+  "same_surf_tidx",
+  "jockey_s_win",
+  "trainer_s_win",
+  "sire_wet_win",
+  "front_pressure",
   "sire_win",
   "sire_top3",
   "sire_n",
@@ -87,127 +99,127 @@
    "20250105",
    "20260913"
   ],
-  "logloss_model": 1.9729563313879286,
+  "logloss_model": 1.9713687820432548,
   "logloss_market": 1.9252165828667478,
-  "logloss_pure": 2.1557161913392053,
-  "top1_hit_pure": 0.26075596585960636,
-  "top1_roi_pure": 0.7767636300296115,
-  "logloss_blend": 1.9240120532358411,
+  "logloss_pure": 2.1517583177541915,
+  "top1_hit_pure": 0.25918829472217386,
+  "top1_roi_pure": 0.7846716599895489,
+  "logloss_blend": 1.9235632837619134,
   "blend_w_market": 0.85,
-  "top1_hit_model": 0.3220693259014109,
+  "top1_hit_model": 0.3196307263542937,
   "top1_hit_market": 0.33356558090924926,
-  "top1_hit_blend": 0.3330430238634384,
-  "top1_roi_model": 0.8150844800557393,
+  "top1_hit_blend": 0.3333913952273123,
+  "top1_roi_model": 0.8058526389130815,
   "top1_roi_market": 0.7921268071764501,
-  "tansho_model_bets": 5445,
-  "tansho_model_roi": 0.9202938475665748,
-  "tansho_model_hit": 0.09917355371900827,
-  "tansho_pure_bets": 12486,
-  "tansho_pure_roi": 0.827390677558866,
-  "tansho_pure_hit": 0.06447220887393881,
-  "tansho_blend_bets": 18,
-  "tansho_blend_roi": 0.28888888888888886,
-  "tansho_blend_hit": 0.1111111111111111,
+  "tansho_model_bets": 5746,
+  "tansho_model_roi": 0.9528541594152454,
+  "tansho_model_hit": 0.10511660285415941,
+  "tansho_pure_bets": 12515,
+  "tansho_pure_roi": 0.8123371953655615,
+  "tansho_pure_hit": 0.06424290850978825,
+  "tansho_blend_bets": 15,
+  "tansho_blend_roi": 0.3466666666666666,
+  "tansho_blend_hit": 0.13333333333333333,
   "importance": [
    [
     "perf_cls",
-    62505.8
+    59400.6
    ],
    [
     "last_ninki",
-    35047.2
+    31939.0
    ],
    [
-    "jockey_win",
-    24332.2
+    "jockey_s_win",
+    25936.4
    ],
    [
     "sire_sb_win",
-    22836.2
-   ],
-   [
-    "damsire_s_win",
-    15798.9
+    18656.4
    ],
    [
     "last_fin",
-    14969.6
+    15161.5
    ],
    [
-    "same_surf_perf",
-    8015.9
+    "damsire_s_win",
+    14730.5
    ],
    [
-    "heads",
-    6966.9
-   ],
-   [
-    "trainer_win",
-    6617.0
-   ],
-   [
-    "sire_sb_n",
-    6557.0
-   ],
-   [
-    "last_cls_diff",
-    6295.2
-   ],
-   [
-    "body_weight",
-    5898.6
-   ],
-   [
-    "venue",
-    5873.8
-   ],
-   [
-    "last_agari_idx",
-    5753.8
-   ],
-   [
-    "damsire_s_n",
-    5734.6
-   ],
-   [
-    "age",
-    5652.9
-   ],
-   [
-    "cls_rank",
-    5647.9
-   ],
-   [
-    "outrun",
-    5266.4
-   ],
-   [
-    "last_tidx",
-    4802.4
+    "trainer_s_win",
+    9146.7
    ],
    [
     "perf_w",
-    4565.1
+    8687.9
    ],
    [
-    "jockey_top3",
-    4383.9
+    "sire_wet_win",
+    8061.7
    ],
    [
-    "best_fin",
-    4267.8
+    "heads",
+    7030.0
    ],
    [
-    "weight_diff",
-    4143.2
+    "same_surf_perf",
+    6955.9
+   ],
+   [
+    "venue",
+    5795.3
+   ],
+   [
+    "damsire_s_n",
+    5751.3
+   ],
+   [
+    "sire_sb_n",
+    5514.9
+   ],
+   [
+    "cls_rank",
+    5450.5
+   ],
+   [
+    "same_surf_tidx",
+    5381.9
+   ],
+   [
+    "last_agari_idx",
+    5381.8
+   ],
+   [
+    "last_cls_diff",
+    5356.3
+   ],
+   [
+    "body_weight",
+    5234.8
+   ],
+   [
+    "age",
+    5194.9
+   ],
+   [
+    "jockey_win",
+    5036.7
+   ],
+   [
+    "outrun",
+    4603.9
+   ],
+   [
+    "early_pos",
+    4251.0
    ],
    [
     "damsire_top3",
-    4019.4
+    4067.8
    ],
    [
-    "best_tidx",
-    3965.6
+    "weight_diff",
+    4002.8
    ]
   ]
  },
