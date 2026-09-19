@@ -210,7 +210,12 @@ race_labels = [f"{i}R" for i in range(1, 13)]
 if ss.get("race") not in race_labels:
     ss["race"] = "11R"
 race_label = st.pills("レース", race_labels, selection_mode="single", key="race")
-style = st.pills("スタイル", list(strategy.STYLES), selection_mode="single", default="バランス", key="style") or "バランス"
+mode = st.pills("買い方", ["2点勝負", "フォーメーション"], selection_mode="single", default="2点勝負", key="mode") or "2点勝負"
+if mode == "フォーメーション":
+    style = st.pills("スタイル", list(strategy.STYLES), selection_mode="single", default="バランス", key="style") or "バランス"
+else:
+    style = "バランス"
+policy = (statmodel.load() or {}).get("policy") or None
 
 m_sel = by_venue.get(venue or "")
 rno = int((race_label or "11R").rstrip("R"))
@@ -255,9 +260,32 @@ if res and res["race_id"] == (rs.race_id if rs else None):
     """, unsafe_allow_html=True)
 
     # --- 買い目
-    st.markdown(f'<div class="sec">買い目 ({plan.style})</div>', unsafe_allow_html=True)
-    total = 0
-    for kind in ("単勝", "馬連", "ワイド", "三連複"):
+    if mode == "2点勝負":
+        two, reason = strategy.best_two(plan.win_probs, odds, policy)
+        st.markdown('<div class="sec">買い目 (2点勝負)</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="note">{reason}</div>', unsafe_allow_html=True)
+        for t in two:
+            good = " good" if (t.ev or 0) >= 1.0 else ""
+            meta_t = f"{t.prob*100:.1f}%" + (f" / {t.odds:.1f}倍 / 期待値 {t.ev:.2f}" if t.odds else " / オッズ未発売")
+            st.markdown(f'<div class="tk{good}"><span class="cmb">{t.kind} {t.label}</span><span class="meta">{meta_t}</span></div>',
+                        unsafe_allow_html=True)
+        sm2 = strategy.summarize(two)
+        ev_txt = f" / 期待回収率 {sm2['ev']*100:.0f}%" if sm2["ev"] else ""
+        st.markdown(f'<div class="note">{sm2["points"]}点 / 的中率 {sm2["hit"]*100:.0f}%{ev_txt}</div>', unsafe_allow_html=True)
+        if policy:
+            p_top_ = max(plan.win_probs.values())
+            bks = policy["buckets"]
+            bi = max(i for i in range(len(bks) - 1) if p_top_ >= bks[i])
+            bt = (policy.get("by_bucket_test") or [None] * 9)[bi]
+            if bt and bt.get("races"):
+                st.markdown(f'<div class="note">この帯の検証成績 ({policy["test_period"][0][:4]}年 {bt["races"]}レース): '
+                            f'レース的中率 {bt["hit_rate"]*100:.0f}% / 回収率 {bt["roi"]*100:.0f}%</div>', unsafe_allow_html=True)
+        plan.tickets = {"2点勝負": two}
+        total = len(two)
+    else:
+        st.markdown(f'<div class="sec">買い目 ({plan.style})</div>', unsafe_allow_html=True)
+        total = 0
+    for kind in (() if mode == "2点勝負" else ("単勝", "馬連", "ワイド", "三連複")):
         ts = plan.tickets.get(kind, [])
         if not ts:
             if kind == "単勝":
@@ -278,7 +306,7 @@ if res and res["race_id"] == (rs.race_id if rs else None):
     if res.get("saved"):
         b1.success(f"台帳に保存済み #{res['saved']}")
     elif b1.button("📒 台帳に保存", use_container_width=True):
-        res["saved"] = ledger.save_prediction(race, plan, est["engine"]); st.rerun()
+        res["saved"] = ledger.save_prediction(race, plan, f"{est['engine']}/{mode}"); st.rerun()
     if b2.button("🔄 オッズ更新", use_container_width=True):
         load_odds.clear()
         odds = load_odds(race.race_id, int(time.time()))
@@ -363,9 +391,17 @@ if meta and meta.get("metrics"):
         st.markdown(f"- 1番手の勝率: モデル {mt['top1_hit_model']*100:.1f}% / 市場 (1番人気) {mt['top1_hit_market']*100:.1f}%\n"
                     f"- 対数損失 (低いほど良い): モデル {mt['logloss_model']:.3f} / 市場 {mt['logloss_market']:.3f} / 混合 {mt['logloss_blend']:.3f}\n"
                     f"- 単勝 (期待値1.1以上のみ): 混合 {mt['tansho_blend_bets']}回 回収率 {(mt['tansho_blend_roi'] or 0)*100:.0f}% / 1番人気買い続け {(mt['tansho_fav_roi'] or 0)*100:.0f}%")
-        for sname in ("堅実", "バランス"):
-            fm = mt.get(f"formation_{sname}")
-            if fm and fm.get("roi") is not None:
-                st.markdown(f"- {sname} (馬連+ワイド+三連複): レース的中率 {fm['race_hit']*100:.0f}% / 回収率 {fm['roi']*100:.0f}%")
+        pol = (statmodel.load() or {}).get("policy")
+        if pol:
+            st.markdown(f"**2点勝負 (帯ごとに券種を切替)** 方針は{pol['fit_period'][0][:4]}年の予想で決め、{pol['test_period'][0][:4]}年で検証")
+            st.markdown(f"- 検証 {pol['test']['races']:,}レース: レース的中率 {pol['test']['hit_rate']*100:.0f}% / 回収率 {pol['test']['roi']*100:.0f}%")
+            rows_ = [{"本命勝率の帯": f"{b['bucket'][0]*100:.0f}〜{min(b['bucket'][1],1)*100:.0f}%", "買い方": b["choice"], "レース": b["races"],
+                      "的中率": f"{b['hit_rate']*100:.0f}%", "回収率": f"{b['roi']*100:.0f}%"} for b in pol["by_bucket_test"]]
+            st.dataframe(pd.DataFrame(rows_), hide_index=True, use_container_width=True)
+            ut = pol.get("uniform_test") or {}
+            if ut:
+                rows_ = sorted(({"買い方 (全レース一律)": k, "的中率": f"{v['hit_rate']*100:.0f}%", "回収率": f"{v['roi']*100:.0f}%", "_r": v["roi"]}
+                                for k, v in ut.items()), key=lambda r: -r["_r"])
+                st.dataframe(pd.DataFrame([{k: v for k, v in r.items() if k != "_r"} for r in rows_]), hide_index=True, use_container_width=True)
 
 st.caption("データ: netkeiba。予想は参考情報であり、購入は自己責任で。20歳未満の馬券購入は法律で禁止されています。")

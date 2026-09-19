@@ -89,7 +89,7 @@ def combo_probs(win: dict[int, float]) -> dict:
     for key, v in trio.items():
         for a, b in itertools.combinations(key, 2):
             wide[(a, b)] = wide.get((a, b), 0.0) + v
-    return dict(umaren=umaren, wide=wide, trio=trio, place=place)
+    return dict(umaren=umaren, wide=wide, trio=trio, place=place, exacta=exacta, trifecta=trifecta)
 
 
 def _odds_of(table: dict[str, float], combo: tuple[int, ...]) -> Optional[float]:
@@ -169,3 +169,55 @@ def summarize(tickets: list[Ticket]) -> dict:
     evs = [t.ev for t in tickets if t.ev is not None]
     ev = sum(evs) / len(tickets) if len(evs) == len(tickets) else None
     return dict(points=len(tickets), hit=hit, ev=ev)
+
+
+# ---------------------------------------------------------------- 2点勝負
+# 券種ごとの候補 (確率の高い順)。オッズ表のキーは scraper.fetch_all_odds と同じ。
+KIND_KEY = {"単勝": "win", "馬連": "umaren", "馬単": "umatan", "ワイド": "wide", "三連複": "sanrenpuku", "三連単": "sanrentan"}
+
+
+def candidates(win: dict[int, float], odds: dict[str, dict[str, float]] | None = None) -> dict[str, list[Ticket]]:
+    """券種 -> 確率順の候補 (上位10)。"""
+    cp = combo_probs(win)
+    odds = odds or {}
+    out: dict[str, list[Ticket]] = {}
+    src = {"単勝": {(u,): p for u, p in win.items()}, "馬連": cp["umaren"], "馬単": cp["exacta"],
+           "ワイド": cp["wide"], "三連複": cp["trio"], "三連単": cp["trifecta"]}
+    for kind, table in src.items():
+        ts = [Ticket(kind, c, p, _odds_of(odds.get(KIND_KEY[kind], {}), c)) for c, p in table.items()]
+        ts.sort(key=lambda t: -t.prob)
+        out[kind] = ts[:10]
+    return out
+
+
+# 検証で決めた既定の方針: 本命の勝率の帯ごとに、どの券種を何点買うか。
+# backtest/bet2.py が models/bet2.json に書き出したものがあればそちらを使う。
+DEFAULT_POLICY = {
+    "buckets": [0.0, 0.20, 0.30, 0.40, 1.01],
+    "choice": ["ワイド2", "ワイド2", "馬連1+ワイド1", "単勝1+馬連1"],
+}
+
+
+def parse_choice(choice: str) -> list[tuple[str, int]]:
+    """"単勝1+馬連1" -> [("単勝",1),("馬連",1)]"""
+    out = []
+    for part in choice.split("+"):
+        kind = part.rstrip("0123456789")
+        n = int(part[len(kind):] or 1)
+        out.append((kind, n))
+    return out
+
+
+def best_two(win: dict[int, float], odds: dict[str, dict[str, float]] | None, policy: dict | None = None) -> tuple[list[Ticket], str]:
+    """2点以内の買い目と、その帯の説明。"""
+    policy = policy or DEFAULT_POLICY
+    cands = candidates(win, odds)
+    p_top = max(win.values()) if win else 0.0
+    bks = policy["buckets"]
+    idx = max(i for i in range(len(bks) - 1) if p_top >= bks[i])
+    choice = policy["choice"][idx]
+    tickets: list[Ticket] = []
+    for kind, n in parse_choice(choice):
+        tickets.extend(cands.get(kind, [])[:n])
+    reason = f"本命勝率 {p_top*100:.0f}% (帯 {bks[idx]*100:.0f}〜{min(bks[idx+1],1.0)*100:.0f}%) → {choice}"
+    return tickets[:2], reason

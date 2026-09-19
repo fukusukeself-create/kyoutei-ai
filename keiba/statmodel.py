@@ -30,7 +30,13 @@ def load() -> Optional[dict]:
             stats = json.load(fp)
         with open(os.path.join(MODEL_DIR, "meta.json"), encoding="utf-8") as fp:
             meta = json.load(fp)
-        _cache["m"] = dict(win=win, top3=top3, stats=stats, meta=meta)
+        policy = None
+        try:
+            with open(os.path.join(MODEL_DIR, "bet2.json"), encoding="utf-8") as fp:
+                policy = json.load(fp)
+        except Exception:
+            policy = None
+        _cache["m"] = dict(win=win, top3=top3, stats=stats, meta=meta, policy=policy)
     except Exception:
         _cache["m"] = None
     return _cache["m"]
