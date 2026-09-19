@@ -386,8 +386,7 @@ if res and res["race_id"] == (rs.race_id if rs else None):
                      "根拠": " / ".join(est["notes"].get(u, []))})
     st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True,
                  column_config={"馬番": st.column_config.NumberColumn(width="small"), "印": st.column_config.TextColumn(width="small")})
-    if has_odds:
-        st.markdown(f'<div class="note">勝率 = 統計モデル {(1-est["blend_w"])*100:.0f}% : 市場 (単勝オッズ) {est["blend_w"]*100:.0f}% の混合。期待値 = 勝率×単勝オッズ。</div>', unsafe_allow_html=True)
+    st.markdown('<div class="note">勝率は統計データのみから推定 (オッズとは混ぜない)。期待値 = 勝率 × 単勝オッズで、1.0 超は市場が過小評価している馬。</div>', unsafe_allow_html=True)
 
     with st.expander("出馬表・近5走・血統"):
         for h in race.horses:

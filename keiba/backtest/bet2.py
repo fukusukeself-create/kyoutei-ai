@@ -60,7 +60,7 @@ def main():
         pay = pays.get(rid)
         if not pay or "単勝" not in pay:
             continue
-        win = dict(zip(grp.umaban_id.astype(int), grp.p_blend))
+        win = dict(zip(grp.umaban_id.astype(int), grp.p_model))
         cands = strategy.candidates(win)
         p_top = max(win.values())
         rec = dict(race_id=rid, date=str(grp.date.iloc[0]), year=str(grp.date.iloc[0])[:4], p_top=p_top,

@@ -80,16 +80,11 @@ def predict(race: Race, win_odds: Optional[dict[str, float]] = None) -> Optional
     z3 = float(sum(raw3)) / 3.0 or 1.0
     top3_p = {u: min(1.0, float(p) / z3) for u, p in zip(umabans, raw3)}
     market = market_probs(win_odds or {}, umabans)
-    w = float(m["meta"]["metrics"].get("blend_w_market", 0.5))
-    if market:
-        lg = {u: (1 - w) * math.log(max(model_p[u], 1e-6)) + w * math.log(max(market.get(u, 1e-4), 1e-6)) for u in umabans}
-        e = {u: math.exp(v) for u, v in lg.items()}
-        zz = sum(e.values())
-        probs = {u: v / zz for u, v in e.items()}
-    else:
-        probs = dict(model_p)
+    # 勝率は統計モデルのみ (オッズに左右されない)。オッズは期待値の計算にだけ使う。
+    probs = dict(model_p)
+    w = 0.0
     return dict(probs=probs, model_probs=model_p, market_probs=market, top3_probs=top3_p,
-                features={u: f for u, f in zip(umabans, feats)}, blend_w=w if market else 0.0)
+                features={u: f for u, f in zip(umabans, feats)}, blend_w=w)
 
 
 def explain(f: dict, stats: dict) -> list[str]:

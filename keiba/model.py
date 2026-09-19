@@ -193,8 +193,8 @@ def market_probs(win_odds: dict[str, float], umabans: list[int]) -> dict[int, fl
     return {u: v / z for u, v in raw.items()} if z else {}
 
 
-def blend(model: dict[int, float], market: dict[int, float], w_market: float = 0.6) -> dict[int, float]:
-    if not market:
+def blend(model: dict[int, float], market: dict[int, float], w_market: float = 0.0) -> dict[int, float]:
+    if not market or w_market <= 0:
         return dict(model)
     out = {}
     for u, pm in model.items():

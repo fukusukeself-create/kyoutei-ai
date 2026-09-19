@@ -2,7 +2,8 @@
 
     python backtest/profit.py
 
-考え方: 点数は問わず「モデルの確率が市場の見立てより十分高い組だけ買う」。
+考え方: 点数は問わず「統計モデルの確率が市場の見立てより十分高い組だけ買う」。
+確率は統計モデルのみ (オッズとは混ぜない)。オッズは期待値の計算にだけ使う。
   - 単勝は確定オッズがあるので 期待値 = 確率 × オッズ をそのまま使う
   - 馬連・ワイド・馬単・三連複・三連単は過去のオッズが無いので、単勝オッズから
     Harville 式で市場の組確率を作り、控除率を引いた「近似オッズ」で期待値を出す
@@ -65,7 +66,7 @@ def main():
         n_races += 1
         year = str(grp.date.iloc[0])[:4]
         um = grp.umaban_id.astype(int).tolist()
-        p_b = dict(zip(um, grp.p_blend))
+        p_b = dict(zip(um, grp.p_model))
         p_m = dict(zip(um, grp.p_market))
         odds = dict(zip(um, grp.odds))
         cb, cm = strategy.combo_probs(p_b), strategy.combo_probs(p_m)
