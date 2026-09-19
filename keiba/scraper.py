@@ -15,6 +15,7 @@ race_id は 12桁: 年4 + 場コード2 + 開催回2 + 日目2 + レース番号
 
 from __future__ import annotations
 
+import os
 import re
 import time
 from dataclasses import dataclass, field, asdict
@@ -53,6 +54,11 @@ class ScrapeError(Exception):
 
 def _get(url: str, timeout: float = 12.0, retries: int = 2) -> str:
     last: Optional[Exception] = None
+    if os.environ.get("KEIBA_PREFER_CURL"):
+        # 収集用: この環境では Python クライアントが弾かれやすいので、最初から curl で取る
+        html = _curl_get(url, timeout)
+        if html:
+            return html
     for i in range(retries + 1):
         try:
             # cookie を持ち回ると一定数の閲覧後に中身の無い 400 が返り続けるため、毎回捨てる
