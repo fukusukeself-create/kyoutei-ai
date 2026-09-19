@@ -187,9 +187,9 @@ def main():
         noskip_grid.append(dict(label=label, fit=f, test=t))
         print(f"{label:16s}: fit {f['bets']:6d}点 的中{f['hit_rate']*100:5.1f}% 回収{f['roi']*100:6.1f}% | "
               f"test {t['bets']:6d}点 的中{t['hit_rate']*100:5.1f}% 回収{t['roi']*100:6.1f}%")
-        # 少ない的中 (まぐれ) で選ばないよう、選定期間で30回以上当たっている買い方から回収率最大を採る
+        # 少ない的中 (まぐれ) で選ばないよう、選定期間で100回以上当たっている買い方から回収率最大を採る
         f["hits"] = int(round(f["hit_rate"] * f["bets"]))
-        if f["hits"] >= 30 and (best_ns is None or f["roi"] > best_ns[1]["roi"]):
+        if f["hits"] >= 100 and (best_ns is None or f["roi"] > best_ns[1]["roi"]):
             best_ns = (label, f, t)
     if best_ns is None:
         best_ns = max(((g["label"], g["fit"], g["test"]) for g in noskip_grid), key=lambda x: x[1]["roi"])
