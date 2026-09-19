@@ -31,7 +31,7 @@ OOS = os.path.join(HERE, "data", "oos.csv")
 FOLDS = [("20250101", "20250701"), ("20250701", "20260101"), ("20260101", "99999999")]
 PARAMS = dict(objective="binary", learning_rate=0.03, num_leaves=31, min_data_in_leaf=80,
               feature_fraction=0.8, bagging_fraction=0.8, bagging_freq=1, lambda_l2=5.0, verbose=-1, seed=7)
-ROUNDS = 700
+ROUNDS = 1500
 
 
 def load(db_path: str):
@@ -84,9 +84,21 @@ def logloss(df: pd.DataFrame, col: str) -> float:
     return float(-np.log(df.loc[df.is_win == 1, col].clip(1e-6, 1)).mean())
 
 
-def fit(train: pd.DataFrame, target: str) -> lgb.Booster:
+def fit(train: pd.DataFrame, target: str, rounds: int | None = None) -> lgb.Booster:
+    """rounds を指定しなければ、学習期間の末尾10% (日付順) を早期終了用に使って木の本数を決める。"""
+    if rounds is None:
+        dates = sorted(train.date.unique())
+        cut = dates[int(len(dates) * 0.9)]
+        tr, ho = train[train.date < cut], train[train.date >= cut]
+        ds = lgb.Dataset(tr[F.FEATURES], label=tr[target], categorical_feature=F.CATEGORICAL, free_raw_data=False)
+        dv = lgb.Dataset(ho[F.FEATURES], label=ho[target], categorical_feature=F.CATEGORICAL, reference=ds)
+        m = lgb.train(PARAMS, ds, num_boost_round=ROUNDS, valid_sets=[dv],
+                      callbacks=[lgb.early_stopping(50, verbose=False)])
+        rounds = max(50, m.best_iteration or ROUNDS)
     ds = lgb.Dataset(train[F.FEATURES], label=train[target], categorical_feature=F.CATEGORICAL, free_raw_data=False)
-    return lgb.train(PARAMS, ds, num_boost_round=ROUNDS)
+    booster = lgb.train(PARAMS, ds, num_boost_round=rounds)
+    booster.rounds_used = rounds
+    return booster
 
 
 def main():
@@ -119,6 +131,7 @@ def main():
         oos.append(df_va[["race_id", "date", "umaban_id", "finish", "odds", "ninki", "is_win", "is_top3",
                           "p_model", "p_top3", "p_market", "fold"]])
         print(f"fold {start}-{end}: train {df_tr.race_id.nunique()} races, valid {df_va.race_id.nunique()} races, "
+              f"rounds {win_m.rounds_used}/{top3_m.rounds_used}, "
               f"logloss model {logloss(df_va, 'p_model'):.4f} market {logloss(df_va, 'p_market'):.4f}", flush=True)
 
     valid = pd.concat(oos, ignore_index=True)

@@ -120,7 +120,7 @@ def main():
             sub = d[d.bucket == b]
             i, r, h = choice_return(sub, c)
             inv, ret, hit = inv + i, ret + r, hit + h
-        return dict(races=len(d), points=inv // 100, hit_rate=hit / len(d) if len(d) else 0, roi=ret / inv if inv else 0)
+        return dict(races=int(len(d)), points=int(inv // 100), hit_rate=float(hit / len(d)) if len(d) else 0.0, roi=float(ret / inv) if inv else 0.0)
 
     result = dict(buckets=BUCKETS, choice=policy_choice,
                   fit=adaptive(fit_df, policy_choice), test=adaptive(test_df, policy_choice),
@@ -134,7 +134,7 @@ def main():
         sub = test_df[test_df.bucket == b]
         i, r, h = choice_return(sub, policy_choice[b])
         result["by_bucket_test"].append(dict(bucket=[BUCKETS[b], BUCKETS[b + 1]], choice=policy_choice[b], races=len(sub),
-                                             hit_rate=h / len(sub) if len(sub) else 0, roi=r / i if i else 0))
+                                             hit_rate=float(h / len(sub)) if len(sub) else 0.0, roi=float(r / i) if i else 0.0))
     print("\n== 切り替え方針 ==", policy_choice)
     print("2025 (選んだ期間):", result["fit"])
     print("2026 (検証):     ", result["test"])
