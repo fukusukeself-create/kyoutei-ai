@@ -189,6 +189,8 @@ class Horse:
     ninki: Optional[int] = None
     # 馬柱から
     sire: str = ""
+    dam: str = ""
+    damsire: str = ""
     style: str = ""     # 逃/先/差/追
     interval: str = ""  # "中12週"
     rest_note: str = ""
@@ -331,11 +333,11 @@ def _parse_past_cell(td) -> Optional[dict]:
     )
 
 
-def fetch_past(race_id: str) -> dict[int, dict]:
-    """馬番 -> {sire, style, interval, rest_note, past:[...]}"""
-    html = _get(f"{BASE}/race/shutuba_past.html?race_id={race_id}")
+def parse_past_page(html: str) -> list[dict]:
+    """馬柱ページの全出走馬。各馬: waku, umaban, name, horse_id, sex_age, jockey, weight,
+    trainer, sire, dam, damsire, style, interval, body_weight, rest_note, past[list]"""
     soup = BeautifulSoup(html, "html.parser")
-    out: dict[int, dict] = {}
+    out: list[dict] = []
     tbl = soup.select_one("table.Shutuba_Past5_Table")
     if tbl is None:
         return out
@@ -347,10 +349,21 @@ def fetch_past(race_id: str) -> dict[int, dict]:
         if not umaban:
             continue
         info = tds[3]
-        sire = _text(info.select_one(".Horse01"))
+        name_a = info.select_one(".Horse02 a")
+        hid = ""
+        if name_a and name_a.get("href"):
+            m = re.search(r"/horse/(\d+)", name_a["href"])
+            hid = m.group(1) if m else ""
         style = _text(info.select_one(".kyakusitu"))
         h06 = _text(info.select_one(".Horse06"))
         interval = h06.replace(style, "").strip()
+        bw_m = re.search(r"(\d{3})kg\s*\(([+\-]?\d+)\)", _text(info))
+        body_weight = f"{bw_m.group(1)}({bw_m.group(2)})" if bw_m else ""
+        jk = tds[4]
+        sex_age = _text(jk.select_one(".Barei"))
+        sex_age = re.sub(r"(牡|牝|セ)(\d+).*", r"\1\2", sex_age)
+        jockey = _text(jk.select_one("a"))
+        wt = _to_float((re.search(r"(\d\d\.\d)", _text(jk)) or [None, ""])[1])
         rest = tr.select_one("td.Rest")
         rest_note = " / ".join(_text(d) for d in rest.select(".Data01")) if rest else ""
         past = []
@@ -358,17 +371,34 @@ def fetch_past(race_id: str) -> dict[int, dict]:
             p = _parse_past_cell(td)
             if p:
                 past.append(p)
-        out[umaban] = dict(sire=sire, style=style, interval=interval, rest_note=rest_note, past=past)
+        out.append(dict(
+            waku=_to_int(_text(tds[0])) or 0, umaban=umaban,
+            name=_text(name_a) if name_a else _text(info.select_one(".Horse02")), horse_id=hid,
+            sex_age=sex_age, jockey=jockey, weight=wt or 0.0,
+            trainer=_text(info.select_one(".Horse05")).replace("・", " "),
+            sire=_text(info.select_one(".Horse01")), dam=_text(info.select_one(".Horse03")),
+            damsire=_text(info.select_one(".Horse04")).strip("()（）"),
+            style=style, interval=interval, body_weight=body_weight, rest_note=rest_note, past=past,
+        ))
     return out
+
+
+def fetch_past(race_id: str) -> dict[int, dict]:
+    """馬番 -> 馬柱情報 (parse_past_page の要素)"""
+    html = _get(f"{BASE}/race/shutuba_past.html?race_id={race_id}")
+    return {r["umaban"]: r for r in parse_past_page(html)}
 
 
 def attach_past(race: Race, past: dict[int, dict]) -> Race:
     for h in race.horses:
         p = past.get(h.umaban)
         if p:
-            h.sire, h.style, h.interval = p["sire"], p["style"], p["interval"]
+            h.sire, h.dam, h.damsire = p["sire"], p["dam"], p["damsire"]
+            h.style, h.interval = p["style"], p["interval"]
             h.rest_note = (h.rest_note + " " + p["rest_note"]).strip()
             h.past = p["past"]
+            if not h.body_weight and p.get("body_weight"):
+                h.body_weight = p["body_weight"]
     return race
 
 
