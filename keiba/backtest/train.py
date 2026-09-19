@@ -139,22 +139,44 @@ def fit_rank(train: pd.DataFrame, rounds: int | None = None) -> tuple[lgb.Booste
     return booster, best_t
 
 
-def fit(train: pd.DataFrame, target: str, rounds: int | None = None, feats: list[str] | None = None) -> lgb.Booster:
-    """rounds を指定しなければ、学習期間の末尾10% (日付順) を早期終了用に使って木の本数を決める。"""
+def market_logit(df: pd.DataFrame) -> np.ndarray:
+    p = np.clip(np.exp(df["mkt_logp"].fillna(np.log(0.005)).to_numpy()), 1e-4, 1 - 1e-4)
+    return np.log(p / (1 - p))
+
+
+def fit(train: pd.DataFrame, target: str, rounds: int | None = None, feats: list[str] | None = None,
+        market_base: bool = False) -> lgb.Booster:
+    """rounds を指定しなければ、学習期間の末尾10% (日付順) を早期終了用に使って木の本数を決める。
+    market_base=True なら市場確率のロジットを初期値 (init_score) にし、木は市場からの補正だけを学ぶ。
+    その場合の予測は sigmoid(市場ロジット + predict(raw_score=True))。"""
     feats = feats or F.FEATURES
+    params = dict(PARAMS)
+    if market_base:
+        params.update(learning_rate=0.02, num_leaves=15, min_data_in_leaf=200, lambda_l2=20.0)
+
+    def dataset(d, ref=None):
+        kw = dict(label=d[target], categorical_feature=F.CATEGORICAL)
+        if market_base:
+            kw["init_score"] = market_logit(d)
+        return lgb.Dataset(d[feats], reference=ref, free_raw_data=False, **kw)
+
     if rounds is None:
         dates = sorted(train.date.unique())
         cut = dates[int(len(dates) * 0.9)]
         tr, ho = train[train.date < cut], train[train.date >= cut]
-        ds = lgb.Dataset(tr[feats], label=tr[target], categorical_feature=F.CATEGORICAL, free_raw_data=False)
-        dv = lgb.Dataset(ho[feats], label=ho[target], categorical_feature=F.CATEGORICAL, reference=ds)
-        m = lgb.train(PARAMS, ds, num_boost_round=ROUNDS, valid_sets=[dv],
+        ds = dataset(tr)
+        dv = dataset(ho, ds)
+        m = lgb.train(params, ds, num_boost_round=ROUNDS, valid_sets=[dv],
                       callbacks=[lgb.early_stopping(50, verbose=False)])
-        rounds = max(50, m.best_iteration or ROUNDS)
-    ds = lgb.Dataset(train[feats], label=train[target], categorical_feature=F.CATEGORICAL, free_raw_data=False)
-    booster = lgb.train(PARAMS, ds, num_boost_round=rounds)
+        rounds = max(20 if market_base else 50, m.best_iteration or ROUNDS)
+    booster = lgb.train(params, dataset(train), num_boost_round=rounds)
     booster.rounds_used = rounds
     return booster
+
+
+def predict_market_base(booster: lgb.Booster, df: pd.DataFrame, feats: list[str]) -> np.ndarray:
+    z = market_logit(df) + booster.predict(df[feats], raw_score=True)
+    return 1.0 / (1.0 + np.exp(-z))
 
 
 def main():
@@ -189,8 +211,8 @@ def main():
             df_va["p_raw"] = win_m.predict(df_va[F.FEATURES])
             df_va["p_pure"] = norm_in_race(df_va, "p_raw")
         MF = F.FEATURES + F.MARKET_FEATURES
-        mkt_m = fit(df_tr, "is_win", feats=MF)
-        df_va["p_raw_mkt"] = mkt_m.predict(df_va[MF])
+        mkt_m = fit(df_tr, "is_win", feats=MF, market_base=True)
+        df_va["p_raw_mkt"] = predict_market_base(mkt_m, df_va, MF)
         df_va["p_model"] = norm_in_race(df_va, "p_raw_mkt")     # 以降の検証・賭け方比較は市場補正モデルで
         df_va["p_top3"] = top3_m.predict(df_va[F.FEATURES])
         df_va["p_market"] = market_prob(df_va)
@@ -236,7 +258,7 @@ def main():
     stats_all = F.build_stats(_with_past(runners))
     df_all = build_rows(races, runners, stats_all)
     top3_all = fit(df_all, "is_top3")
-    mkt_all = fit(df_all, "is_win", feats=F.FEATURES + F.MARKET_FEATURES)
+    mkt_all = fit(df_all, "is_win", feats=F.FEATURES + F.MARKET_FEATURES, market_base=True)
     temperature = None
     if args.objective == "rank":
         win_all, temperature = fit_rank(df_all)
@@ -251,7 +273,7 @@ def main():
     with open(os.path.join(args.out, "stats.json"), "w", encoding="utf-8") as fp:
         json.dump(stats_all, fp, ensure_ascii=False, separators=(",", ":"))
     with open(os.path.join(args.out, "meta.json"), "w", encoding="utf-8") as fp:
-        json.dump(dict(features=F.FEATURES, market_features=F.MARKET_FEATURES, categorical=F.CATEGORICAL, metrics=metrics,
+        json.dump(dict(features=F.FEATURES, market_features=F.MARKET_FEATURES, market_base=True, categorical=F.CATEGORICAL, metrics=metrics,
                        objective=args.objective, temperature=temperature,
                        data_period=[str(races.date.min()), str(races.date.max())], races=int(len(races))),
                   fp, ensure_ascii=False, indent=1)

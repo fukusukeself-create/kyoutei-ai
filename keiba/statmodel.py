@@ -99,7 +99,13 @@ def predict(race: Race, win_odds: Optional[dict[str, float]] = None) -> Optional
         # 市場 (単勝オッズ) を土台に、統計特徴量で補正するモデル
         mk = F.market_features({u: (win_odds or {}).get(f"{u:02d}") for u in umabans})
         Xm = pd.DataFrame([{**f, **mk[u]} for u, f in zip(umabans, feats)])[m["meta"]["features"] + m["meta"]["market_features"]]
-        rawm = m["win_mkt"].predict(Xm)
+        if m["meta"].get("market_base"):
+            pm = Xm["mkt_logp"].fillna(math.log(0.005)).map(lambda v: min(max(math.exp(v), 1e-4), 1 - 1e-4))
+            logit = (pm / (1 - pm)).map(math.log).to_numpy()
+            zs = logit + m["win_mkt"].predict(Xm, raw_score=True)
+            rawm = 1.0 / (1.0 + __import__("numpy").exp(-zs))
+        else:
+            rawm = m["win_mkt"].predict(Xm)
         zm = float(sum(rawm)) or 1.0
         probs = {u: float(p) / zm for u, p in zip(umabans, rawm)}
         engine = "統計+市場補正"
