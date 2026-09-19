@@ -322,6 +322,10 @@ if res and res["race_id"] == (rs.race_id if rs else None):
                         f'連系は過去オッズが無いため単勝オッズからの近似で検証している。</div>', unsafe_allow_html=True)
         elif not value_policy:
             st.markdown('<div class="note">期待値の下限は暫定値 (検証前)。学習が終わると検証で決めた値に置き換わる。</div>', unsafe_allow_html=True)
+        elif not value_policy.get("policy"):
+            st.markdown(f'<div class="note">検証 ({value_policy["fit_period"][0][:4]}〜{value_policy["test_period"][0][:4]}年・学習に使っていない {value_policy["races_fit"]+value_policy["races_test"]:,}レース) では、'
+                        'どの券種・どの期待値の下限でも回収率100%を超える買い方は見つからなかった。上の買い目は「見送り無し」の中で最も損の少なかった買い方。</div>',
+                        unsafe_allow_html=True)
         st.markdown('<div class="note">同額で買う。賭け金を増やすと自分でオッズを下げて優位が消えるため 1点1,000円程度まで。期待値が高い組ほど儲かる関係は無いので配分は変えない。</div>', unsafe_allow_html=True)
         plan.tickets = vb
     else:

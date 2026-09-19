@@ -1,0 +1,208 @@
+{
+ "features": [
+  "surface",
+  "distance",
+  "band",
+  "venue",
+  "cond",
+  "heads",
+  "cls_rank",
+  "turn_right",
+  "waku",
+  "umaban",
+  "umaban_ratio",
+  "sex",
+  "age",
+  "weight",
+  "weight_diff",
+  "body_weight",
+  "bw_delta",
+  "interval_w",
+  "is_debut",
+  "style",
+  "n_nige",
+  "n_front",
+  "n_past",
+  "perf_w",
+  "perf_cls",
+  "last_fin",
+  "last_margin",
+  "last_ninki",
+  "last_cls_diff",
+  "last_agari",
+  "best_fin",
+  "mean_margin",
+  "wins",
+  "top3",
+  "outrun",
+  "class_up",
+  "same_surf_n",
+  "same_surf_perf",
+  "same_band_n",
+  "same_band_perf",
+  "same_venue_n",
+  "same_venue_perf",
+  "same_cond_n",
+  "same_cond_perf",
+  "big_field_perf",
+  "last_tidx",
+  "best_tidx",
+  "mean_tidx",
+  "last_agari_idx",
+  "sire_win",
+  "sire_top3",
+  "sire_n",
+  "sire_sb_win",
+  "sire_sb_top3",
+  "sire_sb_n",
+  "damsire_win",
+  "damsire_top3",
+  "damsire_s_win",
+  "damsire_s_n",
+  "jockey_win",
+  "jockey_top3",
+  "jockey_n",
+  "trainer_win",
+  "trainer_top3",
+  "trainer_n"
+ ],
+ "categorical": [
+  "surface",
+  "band",
+  "venue",
+  "cond",
+  "sex",
+  "style"
+ ],
+ "metrics": {
+  "races": 5741,
+  "valid_period": [
+   "20250105",
+   "20260913"
+  ],
+  "logloss_model": 2.1590961589671305,
+  "logloss_market": 1.9252165828667478,
+  "logloss_blend": 1.9252165828667476,
+  "blend_w_market": 1.0,
+  "top1_hit_model": 0.2609301515415433,
+  "top1_hit_market": 0.33356558090924926,
+  "top1_hit_blend": 0.33356558090924926,
+  "top1_roi_model": 0.8089183069151715,
+  "top1_roi_market": 0.7921268071764501,
+  "tansho_model_bets": 12660,
+  "tansho_model_roi": 0.8132859399684045,
+  "tansho_model_hit": 0.06374407582938389,
+  "tansho_blend_bets": 17,
+  "tansho_blend_roi": 1.4000000000000001,
+  "tansho_blend_hit": 0.23529411764705882,
+  "importance": [
+   [
+    "last_ninki",
+    49779.0
+   ],
+   [
+    "perf_w",
+    29357.2
+   ],
+   [
+    "jockey_win",
+    25662.9
+   ],
+   [
+    "sire_sb_win",
+    22619.2
+   ],
+   [
+    "last_fin",
+    21109.5
+   ],
+   [
+    "damsire_s_win",
+    16112.4
+   ],
+   [
+    "perf_cls",
+    12789.5
+   ],
+   [
+    "same_surf_perf",
+    11735.8
+   ],
+   [
+    "age",
+    7265.2
+   ],
+   [
+    "last_cls_diff",
+    7230.0
+   ],
+   [
+    "heads",
+    6887.8
+   ],
+   [
+    "trainer_win",
+    6860.5
+   ],
+   [
+    "venue",
+    6638.1
+   ],
+   [
+    "sire_sb_n",
+    6618.5
+   ],
+   [
+    "last_agari_idx",
+    6369.3
+   ],
+   [
+    "damsire_s_n",
+    6208.8
+   ],
+   [
+    "body_weight",
+    5846.9
+   ],
+   [
+    "jockey_top3",
+    5416.6
+   ],
+   [
+    "best_fin",
+    5266.1
+   ],
+   [
+    "last_tidx",
+    4855.8
+   ],
+   [
+    "outrun",
+    4796.8
+   ],
+   [
+    "big_field_perf",
+    4769.6
+   ],
+   [
+    "same_band_perf",
+    4543.1
+   ],
+   [
+    "weight_diff",
+    4289.6
+   ],
+   [
+    "damsire_top3",
+    4218.1
+   ]
+  ]
+ },
+ "objective": "binary",
+ "temperature": null,
+ "data_period": [
+  "20230105",
+  "20260913"
+ ],
+ "races": 12397
+}
