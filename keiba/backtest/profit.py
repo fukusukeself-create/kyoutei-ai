@@ -171,9 +171,10 @@ def main():
             for val in sorted(fk[col].dropna().unique()):
                 f, t = stat(fk[fk[col] == val]), stat(tk[tk[col] == val])
                 flag = ""
+                # 条件ごとの自動除外は、選定期間のぶれに合わせてしまい検証期間で裏目に出た (芝 85%→127% 等) ので行わない。
+                # 表示だけ残し、除外は PRE_EXCLUDE (新馬・未勝利) のみ
                 if f["bets"] >= 100 and f["roi"] < 0.85:
-                    excluded.setdefault(kind, []).append([col, val])
-                    flag = "  ← 外す"
+                    flag = "  (選定期間では弱いが除外しない)"
                 print(f"  {kind} {col}={val}: fit {f['bets']}点 回収{f['roi']*100:.0f}% | test {t['bets']}点 回収{t['roi']*100:.0f}%{flag}")
     for kind, v in policy.items():
         v["exclude"] = excluded.get(kind, [])
@@ -215,7 +216,8 @@ def main():
               f"test {t['bets']:6d}点 的中{t['hit_rate']*100:5.1f}% 回収{t['roi']*100:6.1f}%")
         # 少ない的中 (まぐれ) で選ばないよう、選定期間で100回以上当たっている買い方から回収率最大を採る
         f["hits"] = int(round(f["hit_rate"] * f["bets"]))
-        if f["hits"] >= 100 and (best_ns is None or f["roi"] > best_ns[1]["roi"]):
+        # 採用候補は実オッズで検証できる単勝の買い方だけ (連系は近似オッズで、大きな払戻に引きずられる)
+        if label.startswith("単勝 ") and f["hits"] >= 100 and (best_ns is None or f["roi"] > best_ns[1]["roi"]):
             best_ns = (label, f, t)
     if best_ns is None:
         best_ns = max(((g["label"], g["fit"], g["test"]) for g in noskip_grid), key=lambda x: x[1]["roi"])
