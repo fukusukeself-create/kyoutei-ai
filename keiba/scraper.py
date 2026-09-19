@@ -62,6 +62,11 @@ def _get(url: str, timeout: float = 12.0, retries: int = 2) -> str:
                 res.encoding = "utf-8"
                 return res.text
             last = ScrapeError(f"HTTP {res.status_code}: {url}")
+            if res.status_code == 400 and not res.content:
+                # この環境の Python クライアントだけが弾かれることがある。curl で取り直す
+                html = _curl_get(url, timeout)
+                if html:
+                    return html
             if res.status_code in (400, 403, 429, 503) and i < retries:
                 # netkeiba はアクセスが集中すると中身の無い 400 を返す。長めに待って取り直す
                 time.sleep(8.0 * (i + 1))
@@ -71,6 +76,21 @@ def _get(url: str, timeout: float = 12.0, retries: int = 2) -> str:
         if i < retries:
             time.sleep(1.0 * (i + 1))
     raise ScrapeError(f"取得に失敗しました: {url} ({last})")
+
+
+def _curl_get(url: str, timeout: float) -> Optional[str]:
+    import shutil
+    import subprocess
+    if not shutil.which("curl"):
+        return None
+    try:
+        r = subprocess.run(["curl", "-sS", "-A", HEADERS["User-Agent"], "--max-time", str(int(timeout) + 5), url],
+                           capture_output=True, timeout=timeout + 10)
+        if r.returncode == 0 and len(r.stdout) > 500:
+            return r.stdout.decode("utf-8", "replace")
+    except (subprocess.SubprocessError, OSError):
+        return None
+    return None
 
 
 def _text(el) -> str:
