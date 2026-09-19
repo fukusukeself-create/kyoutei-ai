@@ -160,7 +160,7 @@ def main():
     ap.add_argument("--out", default=OUT)
     ap.add_argument("--folds", type=int, default=len(FOLDS))
     ap.add_argument("--valid-from", help="動作確認用: この日以降を1つの検証期間にする")
-    ap.add_argument("--objective", choices=["binary", "rank"], default="rank")
+    ap.add_argument("--objective", choices=["binary", "rank"], default="binary")
     args = ap.parse_args()
     folds = FOLDS[-args.folds:] if not args.valid_from else [(args.valid_from, "99999999")]
 
