@@ -71,8 +71,8 @@ def _ticket_hit(kind: str, combo: list[int], payouts: dict) -> int:
     """的中していれば払戻 (100円あたり)、外れなら 0。"""
     for label, amount in payouts.get(kind, []):
         nums = [int(x) for x in label.split("-") if x.strip().isdigit()]
-        if kind in ("単勝", "複勝"):
-            if nums == combo:
+        if kind in ("単勝", "複勝", "馬単", "三連単"):   # 着順どおりに比べる券種
+            if nums == list(combo):
                 return amount
         else:
             if sorted(nums) == sorted(combo):

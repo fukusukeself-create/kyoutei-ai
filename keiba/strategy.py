@@ -221,3 +221,166 @@ def best_two(win: dict[int, float], odds: dict[str, dict[str, float]] | None, po
         tickets.extend(cands.get(kind, [])[:n])
     reason = f"本命勝率 {p_top*100:.0f}% (帯 {bks[idx]*100:.0f}〜{min(bks[idx+1],1.0)*100:.0f}%) → {choice}"
     return tickets[:2], reason
+
+
+# ---------------------------------------------------------------- 三連複・三連単フォーメーション
+# 競艇アプリと同じ考え方: 確率の合計が目標に届く点数の中で、1〜2本のフォーメーション
+# ("1 - 2,3 - 2,3,4") で書ける組み合わせのうち当たる確率が最大のものを選ぶ。
+FORMATION_CFG = {
+    "三連複": {"堅実": (0.30, 6), "バランス": (0.42, 10), "穴狙い": (0.45, 12)},
+    "三連単": {"堅実": (0.20, 8), "バランス": (0.30, 12), "穴狙い": (0.35, 18)},
+}
+
+
+def _subsets(items: list[int], kmax: int):
+    for k in range(1, min(kmax, len(items)) + 1):
+        yield from itertools.combinations(items, k)
+
+
+def expand_block(kind: str, a: tuple, b: tuple, c: tuple) -> set[tuple]:
+    out = set()
+    for x in a:
+        for y in b:
+            for z in c:
+                if len({x, y, z}) == 3:
+                    out.add((x, y, z) if kind == "三連単" else tuple(sorted((x, y, z))))
+    return out
+
+
+def block_text(a, b, c) -> str:
+    return " - ".join(",".join(str(x) for x in sorted(s)) for s in (a, b, c))
+
+
+def expand_formation(kind: str, text: str) -> list[tuple]:
+    """"1 - 2,3 - 2,3,4 / 2 - 1 - 3" を展開 (重複なし)。"""
+    out: list[tuple] = []
+    for part in str(text).split(" / "):
+        cols = [seg.strip() for seg in part.split("-")]
+        if len(cols) != 3:
+            continue
+        sets = [tuple(int(x) for x in col.split(",") if x.strip().isdigit()) for col in cols]
+        if not all(sets):
+            continue
+        for t in sorted(expand_block(kind, *sets)):
+            if t not in out:
+                out.append(t)
+    return out
+
+
+def exact_formation(kind: str, combos: list[tuple]) -> str:
+    """買い目の集合を、展開すると過不足なく同じになるフォーメーション表記にする (" / " 区切り)。"""
+    want = set(combos)
+    if not want:
+        return ""
+    tree: dict = {}
+    for a, b, c in combos:
+        tree.setdefault(a, {}).setdefault(b, set()).add(c)
+    parts = []
+    for a in sorted(tree):
+        groups = [({b}, set(cs)) for b, cs in tree[a].items()]
+        merged = True
+        while merged:
+            merged = False
+            for i in range(len(groups)):
+                for j in range(i + 1, len(groups)):
+                    bs, cs = groups[i][0] | groups[j][0], groups[i][1] | groups[j][1]
+                    have = {t for t in want if t[0] == a and t[1] in bs}
+                    if expand_block(kind, (a,), tuple(bs), tuple(cs)) == have:
+                        groups[i] = (bs, cs)
+                        del groups[j]
+                        merged = True
+                        break
+                if merged:
+                    break
+        for bs, cs in sorted(groups, key=lambda g: sorted(g[0])):
+            parts.append(block_text((a,), bs, cs))
+    text = " / ".join(parts)
+    got = expand_formation(kind, text)
+    if set(got) != want or len(got) != len(want):
+        text = " / ".join("-".join(map(str, t)) for t in sorted(want, key=lambda t: t))
+    return text
+
+
+def formation(kind: str, win: dict[int, float], odds: dict[str, dict[str, float]] | None = None,
+              style: str = "バランス") -> dict:
+    """kind: 三連複 / 三連単。戻り: text, tickets, points, cover, ev(同額買いの期待回収率 or None)"""
+    import numpy as np
+    target, max_points = FORMATION_CFG[kind].get(style, FORMATION_CFG[kind]["バランス"])
+    cp = combo_probs(win)
+    table = cp["trifecta"] if kind == "三連単" else cp["trio"]
+    ranked = sorted(win, key=lambda u: -win[u])
+    # 目標に届く点数 (確率順の上位N点)
+    ordered = sorted(table.items(), key=lambda kv: -kv[1])
+    cum, need = 0.0, 0
+    for _, p in ordered[:max_points]:
+        need += 1
+        cum += p
+        if cum >= target and need >= 2:
+            break
+    need = max(2, min(max_points, need))
+    top = ranked[:8]
+    universe = [c for c in table if all(x in top for x in c)]
+    index = {c: i for i, c in enumerate(universe)}
+    p = np.array([table[c] for c in universe])
+    if kind == "三連単":
+        heads = [(x,) for x in ranked[:3]] + list(itertools.combinations(ranked[:3], 2))
+        seconds, thirds = list(_subsets(ranked[:6], 4)), list(_subsets(ranked[:7], 5))
+    else:
+        heads = [(x,) for x in ranked[:2]] + [tuple(ranked[:2])]
+        seconds, thirds = list(_subsets(ranked[:6], 4)), list(_subsets(ranked[:8], 6))
+    rows, spec = [], []
+    seen = {}
+    for a in heads:
+        for b in seconds:
+            for c in thirds:
+                bets = expand_block(kind, a, b, c)
+                if not bets or len(bets) > need:
+                    continue
+                key = frozenset(bets)
+                size = len(a) + len(b) + len(c)
+                if key in seen and seen[key][1] <= size:
+                    continue
+                row = np.zeros(len(universe), dtype=bool)
+                row[[index[x] for x in bets if x in index]] = True
+                if key in seen:
+                    rows[seen[key][0]] = row
+                    spec[seen[key][0]] = (a, b, c)
+                    seen[key] = (seen[key][0], size)
+                else:
+                    seen[key] = (len(rows), size)
+                    rows.append(row)
+                    spec.append((a, b, c))
+    if not rows:
+        combos = [c for c, _ in ordered[:need]]
+        text = exact_formation(kind, combos)
+    else:
+        m = np.stack(rows)
+        pts = m.sum(axis=1)
+        cover = m @ p
+        best = (float(cover.max()), [int(np.argmax(cover))])
+        for i in np.argsort(-cover)[:30]:
+            room = need - int(pts[i])
+            if room < 1:
+                continue
+            ok2 = np.flatnonzero(pts <= room)
+            union = m[ok2] | m[i]
+            fit = union.sum(axis=1) <= need
+            if not fit.any():
+                continue
+            uc = union[fit] @ p
+            j = int(np.argmax(uc))
+            if uc[j] > best[0] + 1e-12:
+                best = (float(uc[j]), [int(i), int(ok2[np.flatnonzero(fit)[j]])])
+        mask = np.zeros(len(universe), dtype=bool)
+        for i in best[1]:
+            mask |= m[i]
+        combos = [universe[k] for k in np.flatnonzero(mask)]
+        text = " / ".join(block_text(*spec[i]) for i in best[1])
+        if set(expand_formation(kind, text)) != set(combos):
+            text = exact_formation(kind, combos)
+    key = KIND_KEY[kind]
+    tickets = [Ticket(kind, c, table[c], _odds_of((odds or {}).get(key, {}), c)) for c in combos]
+    tickets.sort(key=lambda t: -t.prob)
+    sm = summarize(tickets)
+    return dict(kind=kind, text=text, tickets=tickets, points=len(tickets), cover=sm["hit"], ev=sm["ev"],
+                target=target, max_points=max_points)

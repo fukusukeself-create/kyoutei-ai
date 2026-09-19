@@ -40,6 +40,10 @@ div[data-testid="stPills"] button { min-height: 38px; font-size: 15px; padding: 
 .tk.good { border-color:#16a34a; background:#f0fdf4; }
 .sec { font-weight:900; color:#1b5e3a; margin:10px 0 4px 0; font-size:0.98rem; border-left:4px solid #1b5e3a; padding-left:6px; }
 .note { font-size:0.78rem; color:#6b7280; }
+.fm-card { background:#fff; border:1px solid #d9e2dc; border-left:4px solid #1b5e3a; border-radius:8px; padding:8px 10px; margin:6px 0; }
+.fm-title { font-weight:900; color:#1b5e3a; font-size:0.95rem; }
+.fm-text { font-size:1.35rem; font-weight:800; letter-spacing:1px; margin:4px 0; }
+.fm-sub { font-size:0.78rem; color:#52605a; }
 .judge { background:#1b5e3a; color:#fff; border-radius:8px; padding:10px 12px; margin:6px 0; }
 .judge .h { font-size:1.15rem; font-weight:900; }
 .judge .s { font-size:0.82rem; opacity:0.92; }
@@ -269,6 +273,12 @@ if res and res["race_id"] == (rs.race_id if rs else None):
             meta_t = f"{t.prob*100:.1f}%" + (f" / {t.odds:.1f}倍 / 期待値 {t.ev:.2f}" if t.odds else " / オッズ未発売")
             st.markdown(f'<div class="tk{good}"><span class="cmb">{t.kind} {t.label}</span><span class="meta">{meta_t}</span></div>',
                         unsafe_allow_html=True)
+        for kind3 in ("三連複", "三連単"):
+            same = [t.combo for t in two if t.kind == kind3]
+            if same:
+                st.markdown(f'<div class="fm-card"><div class="fm-title">{kind3}フォーメーション ({len(same)}点)</div>'
+                            f'<div class="fm-text">{strategy.exact_formation(kind3, same).replace(" / ", "<br>")}</div></div>',
+                            unsafe_allow_html=True)
         sm2 = strategy.summarize(two)
         ev_txt = f" / 期待回収率 {sm2['ev']*100:.0f}%" if sm2["ev"] else ""
         st.markdown(f'<div class="note">{sm2["points"]}点 / 的中率 {sm2["hit"]*100:.0f}%{ev_txt}</div>', unsafe_allow_html=True)
@@ -285,7 +295,7 @@ if res and res["race_id"] == (rs.race_id if rs else None):
     else:
         st.markdown(f'<div class="sec">買い目 ({plan.style})</div>', unsafe_allow_html=True)
         total = 0
-    for kind in (() if mode == "2点勝負" else ("単勝", "馬連", "ワイド", "三連複")):
+    for kind in (() if mode == "2点勝負" else ("単勝", "馬連", "ワイド")):
         ts = plan.tickets.get(kind, [])
         if not ts:
             if kind == "単勝":
@@ -300,6 +310,24 @@ if res and res["race_id"] == (rs.race_id if rs else None):
             meta_t = f"{t.prob*100:.1f}%" + (f" / {t.odds:.1f}倍 / 期待値 {t.ev:.2f}" if t.odds else " / オッズ未発売")
             st.markdown(f'<div class="tk{good}"><span class="cmb">{kind} {t.label}</span><span class="meta">{meta_t}</span></div>',
                         unsafe_allow_html=True)
+    if mode != "2点勝負":
+        for kind3 in ("三連複", "三連単"):
+            fm = strategy.formation(kind3, plan.win_probs, odds, plan.style)
+            plan.tickets[kind3] = fm["tickets"]
+            total += fm["points"]
+            ev_txt = f" / 期待回収率 {fm['ev']*100:.0f}%" if fm["ev"] else ""
+            parts = "　/　".join(f"{part} ({len(strategy.expand_formation(kind3, part))}点)" for part in fm["text"].split(" / "))
+            st.markdown(f"""<div class="fm-card"><div class="fm-title">{kind3}フォーメーション ({fm['points']}点)</div>
+<div class="fm-text">{fm['text'].replace(' / ', '<br>')}</div>
+<div class="fm-sub">{parts} ＝ 合計 {fm['points']}点 / 的中率 {fm['cover']*100:.0f}%{ev_txt}</div>
+<div class="fm-sub">確率の合計が目標 ({fm['target']*100:.0f}%) に届く点数 (上限{fm['max_points']}点) の中で、1〜2本の表記で書ける組合せのうち当たる確率が最大のもの。</div></div>""",
+                        unsafe_allow_html=True)
+            with st.expander(f"{kind3} の内訳 {fm['points']}点"):
+                for t in fm["tickets"]:
+                    good = " good" if (t.ev or 0) >= 1.0 else ""
+                    meta_t = f"{t.prob*100:.1f}%" + (f" / {t.odds:.1f}倍 / 期待値 {t.ev:.2f}" if t.odds else "")
+                    st.markdown(f'<div class="tk{good}"><span class="cmb">{t.label}</span><span class="meta">{meta_t}</span></div>',
+                                unsafe_allow_html=True)
     st.markdown(f'<div class="note">合計 {total}点 (1点100円で {total*100:,}円)。緑枠は期待値1.0超 (市場より妙味あり)。</div>', unsafe_allow_html=True)
 
     b1, b2 = st.columns(2, wrap=False)

@@ -432,7 +432,7 @@ def fetch_odds(race_id: str, kind: str) -> dict[str, float]:
 
 
 def fetch_all_odds(race_id: str) -> dict[str, dict[str, float]]:
-    return {k: fetch_odds(race_id, k) for k in ("win", "place", "umaren", "wide", "sanrenpuku")}
+    return {k: fetch_odds(race_id, k) for k in ("win", "place", "umaren", "wide", "umatan", "sanrenpuku", "sanrentan")}
 
 
 # ---------------------------------------------------------------- 結果
