@@ -56,11 +56,17 @@ def _get(url: str, timeout: float = 12.0, retries: int = 2) -> str:
     last: Optional[Exception] = None
     for i in range(retries + 1):
         try:
+            # cookie を持ち回ると一定数の閲覧後に中身の無い 400 が返り続けるため、毎回捨てる
+            _session.cookies.clear()
             res = _session.get(url, timeout=timeout)
             if res.status_code == 200:
                 res.encoding = "utf-8"
                 return res.text
             last = ScrapeError(f"HTTP {res.status_code}: {url}")
+            if res.status_code in (400, 403, 429, 503) and i < retries:
+                # netkeiba はアクセスが集中すると中身の無い 400 を返す。長めに待って取り直す
+                time.sleep(8.0 * (i + 1))
+                continue
         except requests.RequestException as e:  # 通信断・タイムアウト
             last = e
         if i < retries:

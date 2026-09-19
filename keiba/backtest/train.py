@@ -40,8 +40,18 @@ def load(db_path: str):
     runners = pd.read_sql("SELECT * FROM runners WHERE finish IS NOT NULL", con)
     con.close()
     runners = runners[runners.race_id.isin(races.race_id)]
-    runners = runners.merge(races[["race_id", "date", "surface", "distance"]], on="race_id")
+    runners = runners.merge(races[["race_id", "date", "surface", "distance", "venue", "condition"]], on="race_id")
     return races, runners
+
+
+def _with_past(runners: pd.DataFrame) -> list[dict]:
+    rows = runners.to_dict("records")
+    for d in rows:
+        try:
+            d["past"] = json.loads(d.get("past") or "[]")
+        except (json.JSONDecodeError, TypeError):
+            d["past"] = []
+    return rows
 
 
 def build_rows(races: pd.DataFrame, runners: pd.DataFrame, stats: dict) -> pd.DataFrame:
@@ -119,7 +129,7 @@ def main():
         va_races = races[(races.date >= start) & (races.date < end)]
         if tr_r.empty or va_races.empty:
             continue
-        stats = F.build_stats(tr_r.to_dict("records"))
+        stats = F.build_stats(_with_past(tr_r))
         df_tr = build_rows(races[races.date < start], tr_r, stats)
         df_va = build_rows(va_races, runners[runners.race_id.isin(va_races.race_id)], stats)
         win_m, top3_m = fit(df_tr, "is_win"), fit(df_tr, "is_top3")
@@ -163,7 +173,7 @@ def main():
     print(json.dumps(metrics, ensure_ascii=False, indent=1), flush=True)
 
     # 本番用: 全期間で学習
-    stats_all = F.build_stats(runners.to_dict("records"))
+    stats_all = F.build_stats(_with_past(runners))
     df_all = build_rows(races, runners, stats_all)
     win_all, top3_all = fit(df_all, "is_win"), fit(df_all, "is_top3")
     imp = sorted(zip(F.FEATURES, win_all.feature_importance("gain")), key=lambda x: -x[1])

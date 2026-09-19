@@ -32,6 +32,7 @@ FEATURES = [
     "best_fin", "mean_margin", "wins", "top3", "outrun", "class_up",
     "same_surf_n", "same_surf_perf", "same_band_n", "same_band_perf", "same_venue_n", "same_venue_perf",
     "same_cond_n", "same_cond_perf", "big_field_perf",
+    "last_tidx", "best_tidx", "mean_tidx", "last_agari_idx",
     # 血統・人
     "sire_win", "sire_top3", "sire_n", "sire_sb_win", "sire_sb_top3", "sire_sb_n",
     "damsire_win", "damsire_top3", "damsire_s_win", "damsire_s_n",
@@ -94,6 +95,30 @@ def parse_body_weight(text: str) -> tuple[Optional[float], Optional[float]]:
         return float(m.group(1)), float(m.group(2))
     m = re.search(r"(\d{3})", text or "")
     return (float(m.group(1)), None) if m else (None, None)
+
+
+def time_sec(text: str) -> Optional[float]:
+    m = re.match(r"(\d+):(\d\d\.\d)", text or "")
+    if m:
+        return int(m.group(1)) * 60 + float(m.group(2))
+    m = re.match(r"(\d\d\.\d)$", text or "")
+    return float(m.group(1)) if m else None
+
+
+def time_key(venue: str, surface: str, distance, condition: str) -> str:
+    return f"{venue}|{surface}|{distance}|{condition}"
+
+
+def time_index(stats: dict, venue: str, surface: str, distance, condition: str, t: Optional[float]) -> Optional[float]:
+    """走破時計の指数。そのコース・馬場の標準 (中央値) より何秒速いかを標準偏差で割ったもの。速いほど大きい。"""
+    if t is None:
+        return None
+    tbl = stats.get("time_std") or {}
+    v = tbl.get(time_key(venue, surface, distance, condition)) or tbl.get(time_key(venue, surface, distance, ""))
+    if not v:
+        return None
+    med, sd = v
+    return (med - t) / max(sd, 0.3)
 
 
 def _rate(tbl: dict, key: str, kind: str, base: float) -> tuple[float, float]:
@@ -171,7 +196,7 @@ def runner_features(r: dict, ctx: dict, stats: dict) -> dict:
     nan = float("nan")
     for k in ("perf_w", "perf_cls", "last_fin", "last_margin", "last_ninki", "last_cls_diff", "last_agari",
               "best_fin", "mean_margin", "outrun", "class_up", "same_surf_perf", "same_band_perf",
-              "same_venue_perf", "same_cond_perf", "big_field_perf"):
+              "same_venue_perf", "same_cond_perf", "big_field_perf", "last_tidx", "best_tidx", "mean_tidx", "last_agari_idx"):
         f[k] = nan
     f["wins"] = f["top3"] = 0
     f["same_surf_n"] = f["same_band_n"] = f["same_venue_n"] = f["same_cond_n"] = 0
@@ -226,6 +251,20 @@ def runner_features(r: dict, ctx: dict, stats: dict) -> dict:
             f[key + "_n"] = len(groups[g])
             f[key + "_perf"] = sum(groups[g]) / len(groups[g]) if groups[g] else nan
         f["big_field_perf"] = sum(groups["big"]) / len(groups["big"]) if groups["big"] else nan
+        tidx = []
+        for i, p in enumerate(past):
+            ti = time_index(stats, p.get("venue", ""), p.get("surface", ""), p.get("distance"), p.get("condition", ""),
+                            time_sec(p.get("time", "")))
+            if ti is not None and -6 < ti < 6:
+                tidx.append((i, ti))
+        if tidx:
+            f["last_tidx"] = tidx[0][1] if tidx[0][0] == 0 else nan
+            f["best_tidx"] = max(t for _, t in tidx)
+            ws = [(RECENCY[i] if i < len(RECENCY) else 0.2) for i, _ in tidx]
+            f["mean_tidx"] = sum(w * t for w, (_, t) in zip(ws, tidx)) / sum(ws)
+        ag = (stats.get("agari_std") or {}).get(f"{ctx['surface_str']}|{ctx['band']}")
+        if ag and p0.get("agari"):
+            f["last_agari_idx"] = (ag[0] - p0["agari"]) / max(ag[1], 0.2)
 
     bw_, bt_ = stats.get("base_win", 0.08), stats.get("base_top3", 0.24)
     sire, damsire = r.get("sire") or "", r.get("damsire") or ""
@@ -247,9 +286,13 @@ def runner_features(r: dict, ctx: dict, stats: dict) -> dict:
 
 
 def build_stats(rows) -> dict:
-    """rows: iterable of dict(sire, damsire, jockey, trainer, surface, distance, finish)。学習期間から成績表を作る。"""
+    """rows: iterable of dict(sire, damsire, jockey, trainer, surface, distance, finish, venue, condition, time, past)。
+    学習期間から成績表と標準時計表を作る。"""
+    import statistics
     tables = {k: {} for k in ("sire", "sire_sb", "damsire", "damsire_s", "jockey", "trainer")}
     n_all = w_all = t_all = 0
+    times: dict[str, list[float]] = {}
+    agaris: dict[str, list[float]] = {}
 
     def add(tbl, key, fin):
         if not key:
@@ -274,8 +317,24 @@ def build_stats(rows) -> dict:
         add(tables["jockey"], re.sub(r"[▲△☆★◇]", "", r.get("jockey") or ""), fin)
         tr = (r.get("trainer") or "").split()[-1] if r.get("trainer") else ""
         add(tables["trainer"], tr, fin)
+        t = time_sec(r.get("time") or "")
+        if t and r.get("venue"):
+            times.setdefault(time_key(r["venue"], r.get("surface", ""), r.get("distance"), r.get("condition", "")), []).append(t)
+            times.setdefault(time_key(r["venue"], r.get("surface", ""), r.get("distance"), ""), []).append(t)
+        # 馬柱の近走 (2023年より前の走りも含む) からも標準時計を集める
+        for p in (r.get("past") or []) if isinstance(r.get("past"), list) else []:
+            tp = time_sec(p.get("time") or "")
+            if tp and p.get("venue") and p.get("distance"):
+                times.setdefault(time_key(p["venue"], p.get("surface", ""), p["distance"], p.get("condition", "")), []).append(tp)
+                times.setdefault(time_key(p["venue"], p.get("surface", ""), p["distance"], ""), []).append(tp)
+            if p.get("agari") and p.get("distance"):
+                agaris.setdefault(f"{p.get('surface','')}|{dist_band(int(p['distance']))}", []).append(float(p["agari"]))
+    tables["time_std"] = {k: [round(statistics.median(v), 2), round(statistics.pstdev(v), 3)]
+                          for k, v in times.items() if len(v) >= 30}
+    tables["agari_std"] = {k: [round(statistics.median(v), 2), round(statistics.pstdev(v), 3)]
+                           for k, v in agaris.items() if len(v) >= 100}
     # 件数の少ない鍵は捨てて表を小さくする (平滑化で全体平均に近いので落としても影響が小さい)
-    for k in tables:
+    for k in ("sire", "sire_sb", "damsire", "damsire_s", "jockey", "trainer"):
         tables[k] = {key: v for key, v in tables[k].items() if v[0] >= 5}
     tables["base_win"] = w_all / n_all if n_all else 0.08
     tables["base_top3"] = t_all / n_all if n_all else 0.24

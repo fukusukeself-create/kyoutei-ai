@@ -94,9 +94,9 @@ def list_races(con):
 
 
 def fetch_one(race_id: str):
-    html_p = scraper._get(f"{scraper.BASE}/race/shutuba_past.html?race_id={race_id}")
+    html_p = scraper._get(f"{scraper.BASE}/race/shutuba_past.html?race_id={race_id}", retries=4)
     runners = scraper.parse_past_page(html_p)
-    html_r = scraper._get(f"{scraper.BASE}/race/result.html?race_id={race_id}")
+    html_r = scraper._get(f"{scraper.BASE}/race/result.html?race_id={race_id}", retries=4)
     soup = BeautifulSoup(html_r, "html.parser")
     hdr = scraper._parse_race_header(soup, race_id)
     tbl = soup.select_one("table.RaceTable01")
@@ -157,11 +157,13 @@ def main():
     ap.add_argument("--to", dest="to", default=date.today().strftime("%Y-%m"))
     ap.add_argument("--workers", type=int, default=3)
     ap.add_argument("--sleep", type=float, default=0.3)
+    ap.add_argument("--skip-list", action="store_true", help="開催日・レース一覧の取り直しをせず、未取得レースだけ取る")
     args = ap.parse_args()
     today = date.today().strftime("%Y%m%d")
     con = db()
-    list_days(con, args.frm, args.to, today)
-    list_races(con)
+    if not args.skip_list:
+        list_days(con, args.frm, args.to, today)
+        list_races(con)
     todo = [r[0] for r in con.execute("SELECT race_id FROM races WHERE fetched=0 ORDER BY race_id")]
     total = con.execute("SELECT COUNT(*) FROM races").fetchone()[0]
     print(f"races total={total} todo={len(todo)}", flush=True)
