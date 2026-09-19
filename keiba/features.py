@@ -33,6 +33,9 @@ FEATURES = [
     "same_surf_n", "same_surf_perf", "same_band_n", "same_band_perf", "same_venue_n", "same_venue_perf",
     "same_cond_n", "same_cond_perf", "big_field_perf",
     "last_tidx", "best_tidx", "mean_tidx", "last_agari_idx",
+    # 展開・条件替わり (ダートで効きやすい)
+    "early_pos", "last_early_pos", "turf_to_dirt", "dirt_to_turf", "first_surface", "dist_change", "n_same_surf_runs",
+    "same_surf_tidx", "jockey_s_win", "trainer_s_win", "sire_wet_win", "front_pressure",
     # 血統・人
     "sire_win", "sire_top3", "sire_n", "sire_sb_win", "sire_sb_top3", "sire_sb_n",
     "damsire_win", "damsire_top3", "damsire_s_win", "damsire_s_n",
@@ -269,6 +272,35 @@ def runner_features(r: dict, ctx: dict, stats: dict) -> dict:
         if ag and p0.get("agari"):
             f["last_agari_idx"] = (ag[0] - p0["agari"]) / max(ag[1], 0.2)
 
+    # 展開: 過去の通過順 (最初のコーナー) を頭数で割った位置。0 に近いほど先行
+    nan = float("nan")
+    eps = []
+    for i, p in enumerate(past):
+        ps = (p.get("passing") or "").split("-")
+        try:
+            pos = int(ps[0])
+        except (ValueError, IndexError):
+            continue
+        if p.get("heads"):
+            eps.append((i, (pos - 1) / max(1, p["heads"] - 1)))
+    f["early_pos"] = (sum((RECENCY[i] if i < len(RECENCY) else 0.2) * v for i, v in eps) /
+                      sum((RECENCY[i] if i < len(RECENCY) else 0.2) for i, _ in eps)) if eps else nan
+    f["last_early_pos"] = eps[0][1] if eps and eps[0][0] == 0 else nan
+    p0 = past[0] if past else {}
+    f["turf_to_dirt"] = 1 if (p0.get("surface") == "芝" and ctx["surface_str"] == "ダ") else 0
+    f["dirt_to_turf"] = 1 if (p0.get("surface") == "ダ" and ctx["surface_str"] == "芝") else 0
+    same_runs = [p for p in past if p.get("surface") == ctx["surface_str"]]
+    f["first_surface"] = 1 if (past and not same_runs) else 0
+    f["n_same_surf_runs"] = len(same_runs)
+    f["dist_change"] = (ctx["distance"] - p0["distance"]) if p0.get("distance") and ctx["distance"] else nan
+    st_ = []
+    for i, p in enumerate(same_runs[:3]):
+        ti = time_index(stats, p.get("venue", ""), p.get("surface", ""), p.get("distance"), p.get("condition", ""),
+                        time_sec(p.get("time", "")))
+        if ti is not None and -6 < ti < 6:
+            st_.append(ti)
+    f["same_surf_tidx"] = max(st_) if st_ else nan
+    f["front_pressure"] = ctx["n_front"] / max(1, ctx["heads"])
     bw_, bt_ = stats.get("base_win", 0.08), stats.get("base_top3", 0.24)
     sire, damsire = r.get("sire") or "", r.get("damsire") or ""
     sb_key = f"{sire}|{ctx['surface_str']}|{ctx['band']}"
@@ -285,6 +317,10 @@ def runner_features(r: dict, ctx: dict, stats: dict) -> dict:
     tr = (r.get("trainer") or "").split()[-1] if r.get("trainer") else ""
     f["trainer_win"], f["trainer_n"] = _rate(stats.get("trainer", {}), tr, "win", bw_)
     f["trainer_top3"], _ = _rate(stats.get("trainer", {}), tr, "top3", bt_)
+    f["jockey_s_win"], _ = _rate(stats.get("jockey_s", {}), f"{jk}|{ctx['surface_str']}", "win", bw_)
+    f["trainer_s_win"], _ = _rate(stats.get("trainer_s", {}), f"{tr}|{ctx['surface_str']}", "win", bw_)
+    wet = "wet" if ctx["cond"] >= 2 else "dry"
+    f["sire_wet_win"], _ = _rate(stats.get("sire_cond", {}), f"{sire}|{ctx['surface_str']}|{wet}", "win", bw_)
     return f
 
 
@@ -292,7 +328,7 @@ def build_stats(rows) -> dict:
     """rows: iterable of dict(sire, damsire, jockey, trainer, surface, distance, finish, venue, condition, time, past)。
     学習期間から成績表と標準時計表を作る。"""
     import statistics
-    tables = {k: {} for k in ("sire", "sire_sb", "damsire", "damsire_s", "jockey", "trainer")}
+    tables = {k: {} for k in ("sire", "sire_sb", "damsire", "damsire_s", "jockey", "trainer", "jockey_s", "trainer_s", "sire_cond")}
     n_all = w_all = t_all = 0
     times: dict[str, list[float]] = {}
     agaris: dict[str, list[float]] = {}
@@ -320,6 +356,11 @@ def build_stats(rows) -> dict:
         add(tables["jockey"], re.sub(r"[▲△☆★◇]", "", r.get("jockey") or ""), fin)
         tr = (r.get("trainer") or "").split()[-1] if r.get("trainer") else ""
         add(tables["trainer"], tr, fin)
+        jk = re.sub(r"[▲△☆★◇]", "", r.get("jockey") or "")
+        add(tables["jockey_s"], f"{jk}|{r.get('surface')}", fin)
+        add(tables["trainer_s"], f"{tr}|{r.get('surface')}", fin)
+        wet = "wet" if COND_CODE.get(r.get("condition") or "", 0) >= 2 else "dry"
+        add(tables["sire_cond"], f"{r.get('sire')}|{r.get('surface')}|{wet}", fin)
         t = time_sec(r.get("time") or "")
         if t and r.get("venue"):
             times.setdefault(time_key(r["venue"], r.get("surface", ""), r.get("distance"), r.get("condition", "")), []).append(t)
@@ -337,7 +378,7 @@ def build_stats(rows) -> dict:
     tables["agari_std"] = {k: [round(statistics.median(v), 2), round(statistics.pstdev(v), 3)]
                            for k, v in agaris.items() if len(v) >= 100}
     # 件数の少ない鍵は捨てて表を小さくする (平滑化で全体平均に近いので落としても影響が小さい)
-    for k in ("sire", "sire_sb", "damsire", "damsire_s", "jockey", "trainer"):
+    for k in ("sire", "sire_sb", "damsire", "damsire_s", "jockey", "trainer", "jockey_s", "trainer_s", "sire_cond"):
         tables[k] = {key: v for key, v in tables[k].items() if v[0] >= 5}
     tables["base_win"] = w_all / n_all if n_all else 0.08
     tables["base_top3"] = t_all / n_all if n_all else 0.24
