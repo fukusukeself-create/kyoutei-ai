@@ -26,6 +26,10 @@ def load() -> Optional[dict]:
         import lightgbm as lgb
         win = lgb.Booster(model_file=os.path.join(MODEL_DIR, "win.txt"))
         top3 = lgb.Booster(model_file=os.path.join(MODEL_DIR, "top3.txt"))
+        try:
+            win_mkt = lgb.Booster(model_file=os.path.join(MODEL_DIR, "win_mkt.txt"))
+        except Exception:
+            win_mkt = None
         with open(os.path.join(MODEL_DIR, "stats.json"), encoding="utf-8") as fp:
             stats = json.load(fp)
         with open(os.path.join(MODEL_DIR, "meta.json"), encoding="utf-8") as fp:
@@ -42,7 +46,7 @@ def load() -> Optional[dict]:
                 value_policy = json.load(fp)
         except Exception:
             value_policy = None
-        _cache["m"] = dict(win=win, top3=top3, stats=stats, meta=meta, policy=policy, value_policy=value_policy)
+        _cache["m"] = dict(win=win, win_mkt=win_mkt, top3=top3, stats=stats, meta=meta, policy=policy, value_policy=value_policy)
     except Exception:
         _cache["m"] = None
     return _cache["m"]
@@ -88,11 +92,20 @@ def predict(race: Race, win_odds: Optional[dict[str, float]] = None) -> Optional
     z3 = float(sum(raw3)) / 3.0 or 1.0
     top3_p = {u: min(1.0, float(p) / z3) for u, p in zip(umabans, raw3)}
     market = market_probs(win_odds or {}, umabans)
-    # 勝率は統計モデルのみ (オッズに左右されない)。オッズは期待値の計算にだけ使う。
+    engine = "統計モデル"
     probs = dict(model_p)
     w = 0.0
+    if market and m.get("win_mkt") is not None and m["meta"].get("market_features"):
+        # 市場 (単勝オッズ) を土台に、統計特徴量で補正するモデル
+        mk = F.market_features({u: (win_odds or {}).get(f"{u:02d}") for u in umabans})
+        Xm = pd.DataFrame([{**f, **mk[u]} for u, f in zip(umabans, feats)])[m["meta"]["features"] + m["meta"]["market_features"]]
+        rawm = m["win_mkt"].predict(Xm)
+        zm = float(sum(rawm)) or 1.0
+        probs = {u: float(p) / zm for u, p in zip(umabans, rawm)}
+        engine = "統計+市場補正"
+        w = 1.0
     return dict(probs=probs, model_probs=model_p, market_probs=market, top3_probs=top3_p,
-                features={u: f for u, f in zip(umabans, feats)}, blend_w=w)
+                features={u: f for u, f in zip(umabans, feats)}, blend_w=w, engine=engine)
 
 
 def explain(f: dict, stats: dict) -> list[str]:

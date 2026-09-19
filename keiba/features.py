@@ -339,3 +339,26 @@ def build_stats(rows) -> dict:
     tables["base_win"] = w_all / n_all if n_all else 0.08
     tables["base_top3"] = t_all / n_all if n_all else 0.24
     return tables
+
+
+# ---------------------------------------------------------------- 市場 (単勝オッズ) を土台にした補正モデル用
+MARKET_FEATURES = ["mkt_logp", "mkt_rank", "mkt_top_gap", "mkt_n"]
+
+
+def market_features(odds_by_umaban: dict[int, Optional[float]]) -> dict[int, dict]:
+    """単勝オッズ (馬番→オッズ) から、市場確率の対数・人気順位 (頭数比)・1番人気との差を作る。
+    オッズが無い馬は場の最低確率の半分として扱う。"""
+    import math
+    valid = {u: 1.0 / o for u, o in odds_by_umaban.items() if o and o > 0}
+    if not valid:
+        return {u: dict(mkt_logp=float("nan"), mkt_rank=float("nan"), mkt_top_gap=float("nan"), mkt_n=0)
+                for u in odds_by_umaban}
+    floor = min(valid.values()) / 2
+    inv = {u: valid.get(u, floor) for u in odds_by_umaban}
+    z = sum(inv.values())
+    p = {u: v / z for u, v in inv.items()}
+    order = sorted(p, key=lambda u: -p[u])
+    top = math.log(p[order[0]])
+    n = len(order)
+    return {u: dict(mkt_logp=math.log(p[u]), mkt_rank=(order.index(u) + 1) / n, mkt_top_gap=top - math.log(p[u]),
+                    mkt_n=len(valid)) for u in odds_by_umaban}

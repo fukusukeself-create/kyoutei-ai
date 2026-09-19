@@ -67,8 +67,10 @@ def build_rows(races: pd.DataFrame, runners: pd.DataFrame, stats: dict) -> pd.Da
                 d["past"] = []
             rs.append(d)
         ctx = F.race_context(race, rs)
+        mk = F.market_features({d["umaban"]: d.get("odds") for d in rs})
         for d in rs:
             f = F.runner_features(d, ctx, stats)
+            f.update(mk[d["umaban"]])
             f.update(race_id=rid, date=race["date"], umaban_id=d["umaban"], finish=d["finish"], odds=d["odds"],
                      ninki=d["ninki"], is_win=int(d["finish"] == 1), is_top3=int(d["finish"] <= 3))
             rows.append(f)
@@ -137,18 +139,19 @@ def fit_rank(train: pd.DataFrame, rounds: int | None = None) -> tuple[lgb.Booste
     return booster, best_t
 
 
-def fit(train: pd.DataFrame, target: str, rounds: int | None = None) -> lgb.Booster:
+def fit(train: pd.DataFrame, target: str, rounds: int | None = None, feats: list[str] | None = None) -> lgb.Booster:
     """rounds を指定しなければ、学習期間の末尾10% (日付順) を早期終了用に使って木の本数を決める。"""
+    feats = feats or F.FEATURES
     if rounds is None:
         dates = sorted(train.date.unique())
         cut = dates[int(len(dates) * 0.9)]
         tr, ho = train[train.date < cut], train[train.date >= cut]
-        ds = lgb.Dataset(tr[F.FEATURES], label=tr[target], categorical_feature=F.CATEGORICAL, free_raw_data=False)
-        dv = lgb.Dataset(ho[F.FEATURES], label=ho[target], categorical_feature=F.CATEGORICAL, reference=ds)
+        ds = lgb.Dataset(tr[feats], label=tr[target], categorical_feature=F.CATEGORICAL, free_raw_data=False)
+        dv = lgb.Dataset(ho[feats], label=ho[target], categorical_feature=F.CATEGORICAL, reference=ds)
         m = lgb.train(PARAMS, ds, num_boost_round=ROUNDS, valid_sets=[dv],
                       callbacks=[lgb.early_stopping(50, verbose=False)])
         rounds = max(50, m.best_iteration or ROUNDS)
-    ds = lgb.Dataset(train[F.FEATURES], label=train[target], categorical_feature=F.CATEGORICAL, free_raw_data=False)
+    ds = lgb.Dataset(train[feats], label=train[target], categorical_feature=F.CATEGORICAL, free_raw_data=False)
     booster = lgb.train(PARAMS, ds, num_boost_round=rounds)
     booster.rounds_used = rounds
     return booster
@@ -184,15 +187,20 @@ def main():
         else:
             win_m = fit(df_tr, "is_win")
             df_va["p_raw"] = win_m.predict(df_va[F.FEATURES])
-            df_va["p_model"] = norm_in_race(df_va, "p_raw")
+            df_va["p_pure"] = norm_in_race(df_va, "p_raw")
+        MF = F.FEATURES + F.MARKET_FEATURES
+        mkt_m = fit(df_tr, "is_win", feats=MF)
+        df_va["p_raw_mkt"] = mkt_m.predict(df_va[MF])
+        df_va["p_model"] = norm_in_race(df_va, "p_raw_mkt")     # 以降の検証・賭け方比較は市場補正モデルで
         df_va["p_top3"] = top3_m.predict(df_va[F.FEATURES])
         df_va["p_market"] = market_prob(df_va)
         df_va["fold"] = f"{start}-{end}"
         oos.append(df_va[["race_id", "date", "umaban_id", "finish", "odds", "ninki", "is_win", "is_top3",
-                          "p_model", "p_top3", "p_market", "fold"]])
+                          "p_model", "p_pure", "p_top3", "p_market", "fold"]])
         print(f"fold {start}-{end}: train {df_tr.race_id.nunique()} races, valid {df_va.race_id.nunique()} races, "
-              f"rounds {win_m.rounds_used}/{top3_m.rounds_used}, "
-              f"logloss model {logloss(df_va, 'p_model'):.4f} market {logloss(df_va, 'p_market'):.4f}", flush=True)
+              f"rounds {win_m.rounds_used}/{mkt_m.rounds_used}/{top3_m.rounds_used}, "
+              f"logloss pure {logloss(df_va, 'p_pure'):.4f} market-corrected {logloss(df_va, 'p_model'):.4f} "
+              f"market {logloss(df_va, 'p_market'):.4f}", flush=True)
 
     valid = pd.concat(oos, ignore_index=True)
     best_w, best_ll = 0.0, 9.9
@@ -205,17 +213,19 @@ def main():
     valid.drop(columns=["_b"]).to_csv(OOS, index=False)
 
     top = valid.loc[valid.groupby("race_id").p_model.idxmax()]
+    topp = valid.loc[valid.groupby("race_id").p_pure.idxmax()]
     topm = valid.loc[valid.groupby("race_id").p_market.idxmax()]
     topb = valid.loc[valid.groupby("race_id").p_blend.idxmax()]
     metrics = dict(
         races=int(valid.race_id.nunique()), valid_period=[str(valid.date.min()), str(valid.date.max())],
-        logloss_model=logloss(valid, "p_model"), logloss_market=logloss(valid, "p_market"),
+        logloss_model=logloss(valid, "p_model"), logloss_market=logloss(valid, "p_market"), logloss_pure=logloss(valid, "p_pure"),
+        top1_hit_pure=float(topp.is_win.mean()), top1_roi_pure=float((topp.is_win * topp.odds).mean()),
         logloss_blend=best_ll, blend_w_market=best_w,
         top1_hit_model=float(top.is_win.mean()), top1_hit_market=float(topm.is_win.mean()),
         top1_hit_blend=float(topb.is_win.mean()),
         top1_roi_model=float((top.is_win * top.odds).mean()), top1_roi_market=float((topm.is_win * topm.odds).mean()),
     )
-    for name, col in (("model", "p_model"), ("blend", "p_blend")):
+    for name, col in (("model", "p_model"), ("pure", "p_pure"), ("blend", "p_blend")):
         pick = valid[(valid[col] * valid.odds >= 1.1) & (valid[col] >= 0.06)]
         metrics[f"tansho_{name}_bets"] = int(len(pick))
         metrics[f"tansho_{name}_roi"] = float((pick.is_win * pick.odds).mean()) if len(pick) else None
@@ -226,6 +236,7 @@ def main():
     stats_all = F.build_stats(_with_past(runners))
     df_all = build_rows(races, runners, stats_all)
     top3_all = fit(df_all, "is_top3")
+    mkt_all = fit(df_all, "is_win", feats=F.FEATURES + F.MARKET_FEATURES)
     temperature = None
     if args.objective == "rank":
         win_all, temperature = fit_rank(df_all)
@@ -235,11 +246,12 @@ def main():
     metrics["importance"] = [(k, round(float(v), 1)) for k, v in imp[:25]]
     os.makedirs(args.out, exist_ok=True)
     win_all.save_model(os.path.join(args.out, "win.txt"))
+    mkt_all.save_model(os.path.join(args.out, "win_mkt.txt"))
     top3_all.save_model(os.path.join(args.out, "top3.txt"))
     with open(os.path.join(args.out, "stats.json"), "w", encoding="utf-8") as fp:
         json.dump(stats_all, fp, ensure_ascii=False, separators=(",", ":"))
     with open(os.path.join(args.out, "meta.json"), "w", encoding="utf-8") as fp:
-        json.dump(dict(features=F.FEATURES, categorical=F.CATEGORICAL, metrics=metrics,
+        json.dump(dict(features=F.FEATURES, market_features=F.MARKET_FEATURES, categorical=F.CATEGORICAL, metrics=metrics,
                        objective=args.objective, temperature=temperature,
                        data_period=[str(races.date.min()), str(races.date.max())], races=int(len(races))),
                   fp, ensure_ascii=False, indent=1)

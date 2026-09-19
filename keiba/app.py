@@ -111,7 +111,7 @@ def run_prediction(race, odds, style):
     if sm:
         est = dict(probs=sm["probs"], model_probs=sm["model_probs"], market_probs=sm["market_probs"],
                    notes={u: statmodel.explain(f, statmodel.load()["stats"]) for u, f in sm["features"].items()},
-                   engine="統計モデル", blend_w=sm["blend_w"], top3=sm["top3_probs"])
+                   engine=sm.get("engine", "統計モデル"), blend_w=sm["blend_w"], top3=sm["top3_probs"])
     else:
         e = heuristic.estimate(race, odds.get("win"))
         est = dict(probs=e["probs"], model_probs=e["model_probs"], market_probs=e["market_probs"],
@@ -390,7 +390,10 @@ if res and res["race_id"] == (rs.race_id if rs else None):
                      "根拠": " / ".join(est["notes"].get(u, []))})
     st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True,
                  column_config={"馬番": st.column_config.NumberColumn(width="small"), "印": st.column_config.TextColumn(width="small")})
-    st.markdown('<div class="note">勝率は統計データのみから推定 (オッズとは混ぜない)。期待値 = 勝率 × 単勝オッズで、1.0 超は市場が過小評価している馬。</div>', unsafe_allow_html=True)
+    if est["engine"] == "統計+市場補正":
+        st.markdown('<div class="note">勝率は市場 (単勝オッズ) を土台に、馬柱・血統・騎手・時計の統計で補正したもの。期待値 = 勝率 × 単勝オッズで、1.0 超は市場が過小評価していると判断した馬。</div>', unsafe_allow_html=True)
+    else:
+        st.markdown('<div class="note">勝率は統計データのみから推定 (オッズ未発売のため市場補正なし)。期待値 = 勝率 × 単勝オッズ。</div>', unsafe_allow_html=True)
 
     with st.expander("出馬表・近5走・血統"):
         for h in race.horses:
