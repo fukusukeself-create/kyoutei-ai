@@ -34,17 +34,18 @@ div[data-testid="stPills"] button { min-height: 38px; font-size: 15px; padding: 
 .st-key-venuegrid button { padding: 4px 2px !important; min-height: 74px; line-height: 1.3; white-space: normal !important; }
 .st-key-venuegrid button p { font-size: 12px !important; }
 .tk { display:flex; justify-content:space-between; align-items:center; padding:6px 9px; margin:4px 0;
-      background:#fff; border:1px solid #d9e2dc; border-radius:6px; font-size:0.93rem; }
+      background:#fff; color:#111827; border:1px solid #d9e2dc; border-radius:6px; font-size:0.93rem; }
 .tk .cmb { font-weight:900; font-size:1.03rem; }
 .tk .meta { font-size:0.78rem; color:#52605a; text-align:right; }
-.tk.good { border-color:#16a34a; background:#f0fdf4; }
+.tk.good { border-color:#16a34a; background:#f0fdf4; color:#14532d; }
 .sec { font-weight:900; color:#1b5e3a; margin:10px 0 4px 0; font-size:0.98rem; border-left:4px solid #1b5e3a; padding-left:6px; }
 .note { font-size:0.78rem; color:#6b7280; }
-.fm-card { background:#fff; border:1px solid #d9e2dc; border-left:4px solid #1b5e3a; border-radius:8px; padding:8px 10px; margin:6px 0; }
+.fm-card { background:#fff; color:#111827; border:1px solid #d9e2dc; border-left:4px solid #1b5e3a; border-radius:8px; padding:8px 10px; margin:6px 0; }
 .fm-title { font-weight:900; color:#1b5e3a; font-size:0.95rem; }
 .fm-text { font-size:1.35rem; font-weight:800; letter-spacing:1px; margin:4px 0; }
 .fm-sub { font-size:0.78rem; color:#52605a; }
 .judge { background:#1b5e3a; color:#fff; border-radius:8px; padding:10px 12px; margin:6px 0; }
+.stApp { background:#f3f5f2; color:#111827; }
 .judge .h { font-size:1.15rem; font-weight:900; }
 .judge .s { font-size:0.82rem; opacity:0.92; }
 .waku1{background:#fff;color:#000;border:1px solid #999} .waku2{background:#222;color:#fff} .waku3{background:#dc2626;color:#fff}
@@ -326,8 +327,10 @@ if res and res["race_id"] == (rs.race_id if rs else None):
             all_v = ns
         skipped = [k for k, r in pol["policy"].items() if any(bands.get(c) == v for c, v in r.get("exclude", []))]
         if skipped and has_odds:
-            st.markdown(f'<div class="note">この条件 ({bands["surface"]} / {bands["heads_band"]} / {bands["cls_band"]}) では検証で回収率が低かったため買わない券種: {"・".join(skipped)}</div>',
+            st.markdown(f'<div class="note">このレース ({bands["cls_band"]}) は検証で期待値買いの回収率が低かった区分のため、期待値買いの対象外。下は見送り無しの買い目 (最も損の少なかった買い方)。</div>',
                         unsafe_allow_html=True)
+        if race.surface == "障":
+            st.warning("障害レースは学習の対象外 (芝・ダートのみで学習) のため、勝率と買い目は参考値です。")
         for kind, ts in vb.items():
             if not ts:
                 continue
@@ -337,7 +340,7 @@ if res and res["race_id"] == (rs.race_id if rs else None):
             th_txt = f" (期待値 {rule['threshold']:.1f} 以上)" if rule and all(t.ev and t.ev >= rule["threshold"] for t in ts) else ""
             st.markdown(f'<div class="note"><b>{kind}</b> {sm["points"]}点{th_txt} / 的中率 {sm["hit"]*100:.0f}%{ev_txt}</div>',
                         unsafe_allow_html=True)
-            if kind in ("三連複", "三連単"):
+            if kind in ("三連複", "三連単") and has_odds:   # オッズ待ちのときは上でフォーメーションを出している
                 st.markdown(f'<div class="fm-card"><div class="fm-title">{kind}フォーメーション ({len(ts)}点)</div>'
                             f'<div class="fm-text">{strategy.exact_formation(kind, [t.combo for t in ts]).replace(" / ", "<br>")}</div></div>',
                             unsafe_allow_html=True)

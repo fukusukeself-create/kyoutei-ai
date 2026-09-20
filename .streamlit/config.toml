@@ -1,0 +1,10 @@
+# 端末がダークモードでも読めるよう、アプリの配色はライトに固定する
+[theme]
+base = "light"
+primaryColor = "#1b5e3a"
+backgroundColor = "#f3f5f2"
+secondaryBackgroundColor = "#ffffff"
+textColor = "#111827"
+
+[browser]
+gatherUsageStats = false
