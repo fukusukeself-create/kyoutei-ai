@@ -81,7 +81,7 @@ AI (LLM) は使わない。競艇日和アプリと同じ操作感 (開催一覧
 
 ## 毎週の更新 (自動)
 
-毎週火曜の朝7時 (日本時間) に Claude Code の定期実行 (Routine) が `backtest/weekly_update.py` を動かし、
+毎週金曜の18時 (日本時間、土日の開催前) に Claude Code の定期実行 (Routine) が `backtest/weekly_update.py` を動かし、
 前回以降に確定したレース (土日・祝日) を netkeiba から取り込んで次を更新し、このブランチにプッシュする。
 Streamlit Cloud はプッシュを受けて自動で最新になる。
 
