@@ -94,12 +94,17 @@ def _date_ord(d: str) -> int:
 
 
 def build_rows(races: pd.DataFrame, runners: pd.DataFrame, stats: dict, career: dict | None = None,
-               career_seed: dict | None = None, form: dict | None = None, loo: bool = False) -> pd.DataFrame:
+               career_seed: dict | None = None, form: dict | None = None, tables: dict | None = None) -> pd.DataFrame:
     """特徴量の行を作る。日付順に処理し、馬の通算 (career) と当日の傾向は「そのレースより前」の情報だけで作る。
     career を渡すとその dict を更新しながら使う (学習→検証と続けて呼べる)。"""
     rows = []
     race_map = races.set_index("race_id").to_dict("index")
     career = career if career is not None else {}
+    # 騎手・種牡馬などの勝率表は「そのレースより前の結果」だけで日付順に積み上げる (答えが混ざらない)。
+    # 学習→検証で同じ tables を渡せば、検証期間も実際の予想と同じく直前までの結果で計算される
+    tables = tables if tables is not None else F.new_tables()
+    view = dict(stats)
+    view.update(tables)
     form = form if form is not None else {"j": {}, "t": {}}
     form.setdefault("j", {}); form.setdefault("t", {})
     if career_seed:
@@ -125,15 +130,17 @@ def build_rows(races: pd.DataFrame, runners: pd.DataFrame, stats: dict, career: 
             rs.append(d)
         day = F.day_bias(day_state.get((date, venue), []))
         ctx = F.race_context(race, rs, day)
-        ctx["loo"] = loo   # 学習用の行は、集計表から自分の結果を抜く
         mk = F.market_features({d["umaban"]: d.get("odds") for d in rs})
         for d in rs:
-            f = F.runner_features(d, ctx, stats)
+            f = F.runner_features(d, ctx, view)
             f.update(mk[d["umaban"]])
             f.update(race_id=rid, date=race["date"], umaban_id=d["umaban"], finish=d["finish"], odds=d["odds"],
                      ninki=d["ninki"], is_win=int(d["finish"] == 1), is_top3=int(d["finish"] <= 3))
             rows.append(f)
-        # 出走後: 騎手・調教師の調子、通算、当日傾向を更新
+        # 出走後: 勝率表、騎手・調教師の調子、通算、当日傾向を更新
+        for d in rs:
+            F.stats_add(tables, {**d, "surface": race["surface"], "distance": race["distance"],
+                                 "venue": race["venue"], "condition": race["condition"]})
         for d in rs:
             if d.get("finish"):
                 win = 1 if d["finish"] == 1 else 0
@@ -309,8 +316,9 @@ def main():
         stats = F.build_stats(_with_past(tr_r))
         career: dict = {}
         form: dict = {"j": {}, "t": {}}
-        df_tr = build_rows(races[races.date < start], tr_r, stats, career, form=form, loo=True)
-        df_va = build_rows(va_races, runners[runners.race_id.isin(va_races.race_id)], stats, career, form=form)
+        tables = F.new_tables()
+        df_tr = build_rows(races[races.date < start], tr_r, stats, career, form=form, tables=tables)
+        df_va = build_rows(va_races, runners[runners.race_id.isin(va_races.race_id)], stats, career, form=form, tables=tables)
         top3_m = fit(df_tr, "is_top3")
         if args.objective == "rank":
             win_m, temp = fit_rank(df_tr)
@@ -369,7 +377,7 @@ def main():
     career_all: dict = {}
     form_all: dict = {"j": {}, "t": {}}
     os.makedirs(args.out, exist_ok=True)
-    df_all = build_rows(races, runners, stats_all, career_all, form=form_all, loo=True)
+    df_all = build_rows(races, runners, stats_all, career_all, form=form_all)
     # 本番用: 騎手・調教師の直近の成績 (日付序数, 勝ち) と、父・母父の系統表
     with open(os.path.join(args.out, "form.json"), "w", encoding="utf-8") as fp:
         json.dump(form_all, fp, ensure_ascii=False, separators=(",", ":"))

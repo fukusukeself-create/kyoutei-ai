@@ -276,10 +276,10 @@ def race_context(race: dict, runners: list[dict], day: Optional[dict] = None) ->
 def runner_features(r: dict, ctx: dict, stats: dict) -> dict:
     """r: waku, umaban, sex_age, weight, jockey, trainer, sire, damsire, style, interval, rest_note,
     body_weight, past(list)。stats: {sire, sire_sb, damsire, damsire_s, jockey, trainer, base_win, base_top3}"""
-    own = r.get("finish") if ctx.get("loo") else None
+    own = None   # 集計表は日付順に積み上げたもの (そのレースより前の結果だけ) を渡すので、自分の結果は入っていない
 
     def rate(tbl: dict, key: str, kind: str, base: float) -> tuple[float, float]:
-        """学習用の行 (ctx["loo"]) では、集計表からその馬自身の結果を抜いて使う (自分の答えを見ない)。"""
+        """集計表の率 (平滑化済み)。"""
         return _rate(tbl, key, kind, base, own)
 
     f: dict = {k: ctx[k] for k in ("surface", "distance", "band", "venue", "cond", "heads", "cls_rank",
@@ -494,26 +494,68 @@ def runner_features(r: dict, ctx: dict, stats: dict) -> dict:
     return f
 
 
-def build_stats(rows) -> dict:
-    """rows: iterable of dict(sire, damsire, jockey, trainer, surface, distance, finish, venue, condition, time, past)。
-    学習期間から成績表と標準時計表を作る。"""
-    import statistics
-    TABLE_KEYS = ("sire", "sire_sb", "damsire", "damsire_s", "jockey", "trainer", "jockey_s", "trainer_s", "sire_cond",
-                  "critic", "sire_line_sb", "damsire_line_s", "nick", "jockey_venue", "trainer_sb", "jt_combo",
-                  "course_waku", "course_style", "cond_style")
-    tables = {k: {} for k in TABLE_KEYS}
-    n_all = w_all = t_all = 0
-    times: dict[str, list[float]] = {}
-    agaris: dict[str, list[float]] = {}
+RATE_TABLES = ("sire", "sire_sb", "damsire", "damsire_s", "jockey", "trainer", "jockey_s", "trainer_s", "sire_cond",
+               "critic", "sire_line_sb", "damsire_line_s", "nick", "jockey_venue", "trainer_sb", "jt_combo",
+               "course_waku", "course_style", "cond_style")
 
-    def add(tbl, key, fin):
+
+def new_tables() -> dict:
+    return {k: {} for k in RATE_TABLES}
+
+
+def stats_add(tables: dict, r: dict) -> None:
+    """集計表に1走ぶんの結果を足す。r: sire, damsire, jockey, trainer, surface, distance, venue, condition,
+    finish, oik_critic, sire_line, damsire_line, waku, style。"""
+    fin = r.get("finish")
+    if not fin:
+        return
+
+    def add(tbl, key):
         if not key:
             return
-        v = tbl.setdefault(key, [0, 0, 0])
+        v = tables[tbl].setdefault(key, [0, 0, 0])
         v[0] += 1
         v[1] += 1 if fin == 1 else 0
         v[2] += 1 if fin <= 3 else 0
 
+    band = dist_band(int(r.get("distance") or 0))
+    surf = r.get("surface")
+    jk, tr = jockey_key(r.get("jockey")), trainer_key(r.get("trainer"))
+    add("sire", r.get("sire"))
+    add("sire_sb", f"{r.get('sire')}|{surf}|{band}")
+    add("damsire", r.get("damsire"))
+    add("damsire_s", f"{r.get('damsire')}|{surf}")
+    add("jockey", jk)
+    add("trainer", tr)
+    add("jockey_s", f"{jk}|{surf}")
+    add("trainer_s", f"{tr}|{surf}")
+    add("sire_cond", f"{r.get('sire')}|{surf}|{wet_key(r.get('condition')) == '重' and 'wet' or 'dry'}")
+    add("critic", r.get("oik_critic") or "")
+    sl, dl = r.get("sire_line") or "", r.get("damsire_line") or ""
+    if sl:
+        add("sire_line_sb", f"{sl}|{surf}|{band}")
+    if dl:
+        add("damsire_line_s", f"{dl}|{surf}")
+    if sl and dl:
+        add("nick", f"{sl}|{dl}")
+    add("jockey_venue", f"{jk}|{r.get('venue')}")
+    add("trainer_sb", f"{tr}|{surf}|{band}")
+    add("jt_combo", f"{jk}|{tr}")
+    ck = course_key(r.get("venue"), surf, r.get("distance"))
+    add("course_waku", f"{ck}|{waku_band(r.get('waku'))}")
+    add("course_style", f"{ck}|{r.get('style') or ''}")
+    add("cond_style", f"{surf}|{wet_key(r.get('condition'))}|{r.get('style') or ''}")
+
+
+def build_stats(rows, prune: bool = True) -> dict:
+    """rows (学習期間の出走馬) から、集計表・全体の勝率・標準時計表を作る。
+    学習データの特徴量は build_rows が日付順に積み上げた表で作るので、ここの集計表は本番の推論と画面表示に使う。"""
+    import statistics
+    rows = list(rows)
+    tables = new_tables()
+    n_all = w_all = t_all = 0
+    times: dict[str, list[float]] = {}
+    agaris: dict[str, list[float]] = {}
     for r in rows:
         fin = r.get("finish")
         if not fin:
@@ -521,39 +563,11 @@ def build_stats(rows) -> dict:
         n_all += 1
         w_all += 1 if fin == 1 else 0
         t_all += 1 if fin <= 3 else 0
-        band = dist_band(int(r.get("distance") or 0))
-        add(tables["sire"], r.get("sire"), fin)
-        add(tables["sire_sb"], f"{r.get('sire')}|{r.get('surface')}|{band}", fin)
-        add(tables["damsire"], r.get("damsire"), fin)
-        add(tables["damsire_s"], f"{r.get('damsire')}|{r.get('surface')}", fin)
-        add(tables["jockey"], re.sub(r"[▲△☆★◇]", "", r.get("jockey") or ""), fin)
-        tr = (r.get("trainer") or "").split()[-1] if r.get("trainer") else ""
-        add(tables["trainer"], tr, fin)
-        jk = re.sub(r"[▲△☆★◇]", "", r.get("jockey") or "")
-        add(tables["jockey_s"], f"{jk}|{r.get('surface')}", fin)
-        add(tables["trainer_s"], f"{tr}|{r.get('surface')}", fin)
-        wet = "wet" if COND_CODE.get(r.get("condition") or "", 0) >= 2 else "dry"
-        add(tables["sire_cond"], f"{r.get('sire')}|{r.get('surface')}|{wet}", fin)
-        add(tables["critic"], r.get("oik_critic") or "", fin)
-        sl, dl = r.get("sire_line") or "", r.get("damsire_line") or ""
-        if sl:
-            add(tables["sire_line_sb"], f"{sl}|{r.get('surface')}|{band}", fin)
-        if dl:
-            add(tables["damsire_line_s"], f"{dl}|{r.get('surface')}", fin)
-        if sl and dl:
-            add(tables["nick"], f"{sl}|{dl}", fin)
-        add(tables["jockey_venue"], f"{jk}|{r.get('venue')}", fin)
-        add(tables["trainer_sb"], f"{tr}|{r.get('surface')}|{band}", fin)
-        add(tables["jt_combo"], f"{jk}|{tr}", fin)
-        ck = course_key(r.get("venue"), r.get("surface"), r.get("distance"))
-        add(tables["course_waku"], f"{ck}|{waku_band(r.get('waku'))}", fin)
-        add(tables["course_style"], f"{ck}|{r.get('style') or ''}", fin)
-        add(tables["cond_style"], f"{r.get('surface')}|{wet_key(r.get('condition'))}|{r.get('style') or ''}", fin)
+        stats_add(tables, r)
         t = time_sec(r.get("time") or "")
         if t and r.get("venue"):
             times.setdefault(time_key(r["venue"], r.get("surface", ""), r.get("distance"), r.get("condition", "")), []).append(t)
             times.setdefault(time_key(r["venue"], r.get("surface", ""), r.get("distance"), ""), []).append(t)
-        # 馬柱の近走 (2023年より前の走りも含む) からも標準時計を集める
         for p in (r.get("past") or []) if isinstance(r.get("past"), list) else []:
             tp = time_sec(p.get("time") or "")
             if tp and p.get("venue") and p.get("distance"):
@@ -565,16 +579,12 @@ def build_stats(rows) -> dict:
                           for k, v in times.items() if len(v) >= 30}
     tables["agari_std"] = {k: [round(statistics.median(v), 2), round(statistics.pstdev(v), 3)]
                            for k, v in agaris.items() if len(v) >= 100}
-    # 件数の少ない鍵は捨てて表を小さくする (平滑化で全体平均に近いので落としても影響が小さい)
-    for k in TABLE_KEYS:
-        tables[k] = {key: v for key, v in tables[k].items() if v[0] >= 5}
+    if prune:
+        for k in RATE_TABLES:
+            tables[k] = {key: v for key, v in tables[k].items() if v[0] >= 5}
     tables["base_win"] = w_all / n_all if n_all else 0.08
     tables["base_top3"] = t_all / n_all if n_all else 0.24
     return tables
-
-
-# ---------------------------------------------------------------- 市場 (単勝オッズ) を土台にした補正モデル用
-MARKET_FEATURES = ["mkt_logp", "mkt_rank", "mkt_top_gap", "mkt_n"]
 
 
 def market_features(odds_by_umaban: dict[int, Optional[float]]) -> dict[int, dict]:
