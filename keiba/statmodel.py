@@ -66,6 +66,11 @@ def load() -> Optional[dict]:
                 trio = json.load(fp)
         except Exception:
             trio = None
+        try:   # 画面表示用のコース別集計 (予想には使わない)
+            with open(os.path.join(MODEL_DIR, "display_stats.json"), encoding="utf-8") as fp:
+                display_stats = json.load(fp)
+        except Exception:
+            display_stats = None
         with open(os.path.join(MODEL_DIR, "meta.json"), encoding="utf-8") as fp:
             meta = json.load(fp)
         policy = None
@@ -81,7 +86,8 @@ def load() -> Optional[dict]:
         except Exception:
             value_policy = None
         _cache["m"] = dict(win=win, win_mkt=win_mkt, top3=top3, stats=stats, meta=meta, policy=policy,
-                           value_policy=value_policy, horses=horses, lines=lines, form=form, trio=trio)
+                           value_policy=value_policy, horses=horses, lines=lines, form=form, trio=trio,
+                           display_stats=display_stats)
     except Exception:
         _cache["m"] = None
     return _cache["m"]

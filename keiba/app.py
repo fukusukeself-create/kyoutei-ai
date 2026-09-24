@@ -408,7 +408,8 @@ if res and res["race_id"] == (rs.race_id if rs else None):
     # --- コースの特徴 (過去データ)
     if statmodel.available() and race.surface in ("芝", "ダ"):
         import features as F
-        prof = F.course_profile(statmodel.load()["stats"], race.venue, race.surface, race.distance, race.condition)
+        _m = statmodel.load()
+        prof = F.course_profile(_m.get("display_stats") or _m["stats"], race.venue, race.surface, race.distance, race.condition)
         def cell(v):
             r, n = v
             if r is None or n < 30:
