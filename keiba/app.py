@@ -345,16 +345,16 @@ if res and res["race_id"] == (rs.race_id if rs else None):
     show(tan)
     tickets["単勝"] = tan
 
-    # 三連複: 上位3頭の勝率合計が基準以上 (堅いレース) のときだけ
+    # 三連複: 上位3頭の勝率合計が基準以上の「カチカチに固い」レースだけ
     trio_rule = (statmodel.load() or {}).get("trio") or {}
-    th = float(trio_rule.get("top3sum_min", 0.71))
-    k = int(trio_rule.get("k", 5))
+    th = float(trio_rule.get("top3sum_min", 0.85))
+    k = int(trio_rule.get("k", 2))
     top3sum = sum(sorted(plan.win_probs.values(), reverse=True)[:3])
     if top3sum >= th:
         trio = strategy.trio_top(plan.win_probs, odds, k)
         sm = strategy.summarize(trio)
         ev_txt = f" / 期待回収率 {sm['ev']*100:.0f}%" if sm["ev"] else ""
-        st.markdown('<div class="sec">三連複 (上位3頭が堅いレース)</div>', unsafe_allow_html=True)
+        st.markdown('<div class="sec">三連複 (カチカチに固いレース)</div>', unsafe_allow_html=True)
         st.markdown(f'<div class="fm-card"><div class="fm-title">三連複フォーメーション ({len(trio)}点)</div>'
                     f'<div class="fm-text">{strategy.exact_formation("三連複", [t.combo for t in trio]).replace(" / ", "<br>")}</div>'
                     f'<div class="fm-sub">的中率 {sm["hit"]*100:.0f}%{ev_txt} / 上位3頭の勝率合計 {top3sum*100:.0f}% (基準 {th*100:.0f}% 以上)</div></div>',
@@ -366,7 +366,7 @@ if res and res["race_id"] == (rs.race_id if rs else None):
         show(trio)
         tickets["三連複"] = trio
     else:
-        st.markdown(f'<div class="note">三連複: 上位3頭の勝率合計 {top3sum*100:.0f}% (基準 {th*100:.0f}% 未満) の混戦なので出さない。</div>',
+        st.markdown(f'<div class="note">三連複: 上位3頭の勝率合計 {top3sum*100:.0f}% (カチカチの基準 {th*100:.0f}% 未満) なので出さない。</div>',
                     unsafe_allow_html=True)
     plan.tickets = tickets
     total = sum(len(v) for v in tickets.values())

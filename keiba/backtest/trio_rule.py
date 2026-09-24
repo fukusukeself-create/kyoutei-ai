@@ -1,4 +1,4 @@
-"""三連複を「時々」買うための条件を、学習外の予想と実際の払戻で決める。
+"""三連複を「カチカチに固いレースだけ」買うための条件を、学習外の予想と実際の払戻で決める。
 
 三連複は確率の高い順に買うので、過去のオッズが無くても実際の払戻でそのまま答え合わせできる。
 レースを「モデルの上位3頭の固さ」で分け、どの帯なら三連複 (上位 k 点) が回収率で勝つかを
@@ -63,21 +63,21 @@ print(tbl.to_string(index=False))
 for k in (1, 3, 5, 7, 10):
     print(k, "点 全体:", {y: f"{roi(df[df.year == y], k)[0]*100:.0f}% (的中{roi(df[df.year == y], k)[1]*100:.0f}%)" for y in ("2025", "2026")})
 
-# 採用ルール: 上位3頭の勝率合計が「やや堅い」帯の下限以上のレースだけ、三連複を上位 k 点。
-# 2025 で k を選び、2026 で確かめる。単勝の補助 (的中率重視) なので、回収率 90% 以上なら採用する
-lo = float(df[df.band == "やや堅い"].top3sum.min())
+# 採用ルール: 「カチカチに固い」レースだけ。上位3頭の勝率合計が TH 以上 (全体の約7%) のとき、三連複を上位 k 点。
+# k は 2025 の回収率で選び、2026 で確かめる。単勝の補助 (当てにいく買い方) なので、回収率 90% 以上なら採用する
+TH = 0.85
 best = None
-for k in (3, 5):
-    r, h = roi(df[(df.year == "2025") & (df.top3sum >= lo)], k)
+for k in (1, 2, 3):
+    r, h = roi(df[(df.year == "2025") & (df.top3sum >= TH)], k)
     if best is None or r > best[1]:
         best = (k, r, h)
 k, r_fit, h_fit = best
-test = df[(df.year == "2026") & (df.top3sum >= lo)]
+test = df[(df.year == "2026") & (df.top3sum >= TH)]
 r_test, h_test = roi(test, k)
-share = float((df.top3sum >= lo).mean())
-print(f"\n採用: 上位3頭の勝率合計 {lo:.2f} 以上 (全レースの {share*100:.0f}%) で 三連複 上位{k}点 → "
+share = float((df.top3sum >= TH).mean())
+print(f"\n採用: 上位3頭の勝率合計 {TH:.2f} 以上 (全レースの {share*100:.0f}%) で 三連複 上位{k}点 → "
       f"2025 回収率 {r_fit*100:.0f}% 的中{h_fit*100:.0f}% / 2026 {r_test*100:.0f}% 的中{h_test*100:.0f}% ({len(test)}レース)")
-res = dict(top3sum_min=lo, k=k, share=share, fit=dict(roi=float(r_fit), hit=float(h_fit)),
+res = dict(top3sum_min=TH, k=k, share=share, fit=dict(roi=float(r_fit), hit=float(h_fit)),
            test=dict(roi=float(r_test), hit=float(h_test), races=int(len(test))), adopt=bool(r_fit >= 0.9 and r_test >= 0.9))
 json.dump(res, open(os.path.join(os.path.dirname(HERE), "models", "trio.json"), "w"), ensure_ascii=False, indent=1)
 print("saved", res)
