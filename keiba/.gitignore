@@ -3,3 +3,4 @@ __pycache__/
 *.pyc
 backtest/*.log
 models/horses.json
+jravan/*.log
