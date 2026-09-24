@@ -299,6 +299,8 @@ if res and res["race_id"] == (rs.race_id if rs else None):
     <div class="s" style="margin-top:6px;">本命 <b style="font-size:1.1rem">{top.umaban} {top.name}</b> 勝率 {p_top*100:.0f}% ・ {conf}
     ・ {est['engine']}{' + オッズ' if has_odds else ' (オッズ未発売)'} ・ {res['at']}時点</div></div>
     """, unsafe_allow_html=True)
+    if getattr(race, "pre_draw", False):
+        st.warning("枠順確定前のため、馬番は出馬表の掲載順の仮番号です。枠順が出たら (通常は前日) 予想し直してください。")
 
     # --- 買い目
     if mode == "収支プラス狙い":

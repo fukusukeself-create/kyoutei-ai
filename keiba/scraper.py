@@ -250,6 +250,7 @@ class Race:
     grade: str
     heads: int
     horses: list[Horse] = field(default_factory=list)
+    pre_draw: bool = False   # 枠順確定前 (馬番は掲載順の仮番号)
 
 
 def _parse_race_header(soup: BeautifulSoup, race_id: str) -> dict:
@@ -319,6 +320,11 @@ def fetch_shutuba(race_id: str, date: str = "") -> Race:
         if cancel:
             h.rest_note = "出走取消"
         race.horses.append(h)
+    if race.horses and all(h.umaban == 0 for h in race.horses):
+        # 枠順確定前: 掲載順に仮の馬番を振る (近走は馬のIDで照合する)
+        race.pre_draw = True
+        for i, h in enumerate(race.horses, 1):
+            h.umaban = i
     race.horses.sort(key=lambda h: h.umaban)
     if not race.heads:
         race.heads = len(race.horses)
@@ -378,9 +384,7 @@ def parse_past_page(html: str) -> list[dict]:
         tds = tr.select("td")
         if len(tds) < 6:
             continue
-        umaban = _to_int(_text(tds[1]))
-        if not umaban:
-            continue
+        umaban = _to_int(_text(tds[1])) or 0   # 枠順確定前は空 (馬のIDで照合する)
         info = tds[3]
         name_a = info.select_one(".Horse02 a")
         hid = ""
@@ -416,15 +420,22 @@ def parse_past_page(html: str) -> list[dict]:
     return out
 
 
-def fetch_past(race_id: str) -> dict[int, dict]:
-    """馬番 -> 馬柱情報 (parse_past_page の要素)"""
+def fetch_past(race_id: str) -> dict:
+    """馬番 -> 馬柱情報 (parse_past_page の要素)。"id:<horse_id>" の鍵でも引ける。"""
     html = _get(f"{BASE}/race/shutuba_past.html?race_id={race_id}")
-    return {r["umaban"]: r for r in parse_past_page(html)}
+    out: dict = {}
+    for r in parse_past_page(html):
+        if r["umaban"]:
+            out[r["umaban"]] = r
+        if r.get("horse_id"):
+            out[f"id:{r['horse_id']}"] = r
+    return out
 
 
 def attach_past(race: Race, past: dict[int, dict]) -> Race:
     for h in race.horses:
-        p = past.get(h.umaban)
+        p = past.get(f"id:{h.horse_id}") if h.horse_id else None
+        p = p or (past.get(h.umaban) if not race.pre_draw else None)
         if p:
             h.sire, h.dam, h.damsire = p["sire"], p["dam"], p["damsire"]
             h.style, h.interval = p["style"], p["interval"]

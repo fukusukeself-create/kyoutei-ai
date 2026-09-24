@@ -95,7 +95,7 @@ def list_races(con):
 
 def fetch_one(race_id: str):
     html_p = scraper._get(f"{scraper.BASE}/race/shutuba_past.html?race_id={race_id}", retries=4)
-    runners = scraper.parse_past_page(html_p)
+    runners = [r for r in scraper.parse_past_page(html_p) if r["umaban"]]
     html_r = scraper._get(f"{scraper.BASE}/race/result.html?race_id={race_id}", retries=4)
     soup = BeautifulSoup(html_r, "html.parser")
     hdr = scraper._parse_race_header(soup, race_id)
