@@ -587,6 +587,10 @@ def build_stats(rows, prune: bool = True) -> dict:
     return tables
 
 
+# ---------------------------------------------------------------- 市場 (単勝オッズ) を土台にした補正モデル用
+MARKET_FEATURES = ["mkt_logp", "mkt_rank", "mkt_top_gap", "mkt_n"]
+
+
 def market_features(odds_by_umaban: dict[int, Optional[float]]) -> dict[int, dict]:
     """単勝オッズ (馬番→オッズ) から、市場確率の対数・人気順位 (頭数比)・1番人気との差を作る。
     オッズが無い馬は場の最低確率の半分として扱う。"""
