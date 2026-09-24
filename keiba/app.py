@@ -348,16 +348,18 @@ if res and res["race_id"] == (rs.race_id if rs else None):
     # 三連複: 上位3頭の勝率合計が基準以上の「カチカチに固い」レースだけ
     trio_rule = (statmodel.load() or {}).get("trio") or {}
     th = float(trio_rule.get("top3sum_min", 0.85))
+    t1 = float(trio_rule.get("top1_min", 0.50))
     k = int(trio_rule.get("k", 2))
-    top3sum = sum(sorted(plan.win_probs.values(), reverse=True)[:3])
-    if top3sum >= th:
+    probs_sorted = sorted(plan.win_probs.values(), reverse=True)
+    top1p, top3sum = probs_sorted[0], sum(probs_sorted[:3])
+    if top1p >= t1 and top3sum >= th:
         trio = strategy.trio_top(plan.win_probs, odds, k)
         sm = strategy.summarize(trio)
         ev_txt = f" / 期待回収率 {sm['ev']*100:.0f}%" if sm["ev"] else ""
         st.markdown('<div class="sec">三連複 (カチカチに固いレース)</div>', unsafe_allow_html=True)
         st.markdown(f'<div class="fm-card"><div class="fm-title">三連複フォーメーション ({len(trio)}点)</div>'
                     f'<div class="fm-text">{strategy.exact_formation("三連複", [t.combo for t in trio]).replace(" / ", "<br>")}</div>'
-                    f'<div class="fm-sub">的中率 {sm["hit"]*100:.0f}%{ev_txt} / 上位3頭の勝率合計 {top3sum*100:.0f}% (基準 {th*100:.0f}% 以上)</div></div>',
+                    f'<div class="fm-sub">的中率 {sm["hit"]*100:.0f}%{ev_txt} / 本命の勝率 {top1p*100:.0f}% (基準 {t1*100:.0f}%) ・上位3頭の合計 {top3sum*100:.0f}% (基準 {th*100:.0f}%)</div></div>',
                     unsafe_allow_html=True)
         if trio_rule.get("test"):
             st.markdown(f'<div class="note">検証 (確率の高い順に{k}点・実際の払戻で答え合わせ): 2025年 回収率 {trio_rule["fit"]["roi"]*100:.0f}% 的中率 {trio_rule["fit"]["hit"]*100:.0f}% / '
@@ -366,8 +368,8 @@ if res and res["race_id"] == (rs.race_id if rs else None):
         show(trio)
         tickets["三連複"] = trio
     else:
-        st.markdown(f'<div class="note">三連複: 上位3頭の勝率合計 {top3sum*100:.0f}% (カチカチの基準 {th*100:.0f}% 未満) なので出さない。</div>',
-                    unsafe_allow_html=True)
+        st.markdown(f'<div class="note">三連複: 本命の勝率 {top1p*100:.0f}% (基準 {t1*100:.0f}%)・上位3頭の合計 {top3sum*100:.0f}% (基準 {th*100:.0f}%)。'
+                    'カチカチ (本命が圧倒的で相手も絞れている) ではないので出さない。</div>', unsafe_allow_html=True)
     plan.tickets = tickets
     total = sum(len(v) for v in tickets.values())
     st.markdown(f'<div class="note">合計 {total}点 (1点100円で {total*100:,}円)。同額で買う。賭け金を増やすと自分でオッズを下げて優位が消えるため 1点1,000円程度まで。緑枠は期待値1.0超。</div>',
