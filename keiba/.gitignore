@@ -1,6 +1,8 @@
-data/
+data/*
+!data/weekly/
 __pycache__/
 *.pyc
 backtest/*.log
 models/horses.json
 jravan/*.log
+backtest/data/

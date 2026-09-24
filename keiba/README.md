@@ -79,6 +79,27 @@ AI (LLM) は使わない。競艇日和アプリと同じ操作感 (開催一覧
   (`models/lines.json`・`form.json`・`display_stats.json`)
 - JRA-VAN の調教タイムは毎週の最新分を取るのに有料会員と Windows での作業が要るため使っていない
 
+## 毎週の更新 (自動)
+
+毎週火曜の朝7時 (日本時間) に Claude Code の定期実行 (Routine) が `backtest/weekly_update.py` を動かし、
+前回以降に確定したレース (土日・祝日) を netkeiba から取り込んで次を更新し、このブランチにプッシュする。
+Streamlit Cloud はプッシュを受けて自動で最新になる。
+
+- 種牡馬・母父・騎手・調教師などの勝率表 (`models/stats.json`、予想の特徴量)
+- 騎手・調教師の直近60日の成績 (`models/form.json`、画面の「騎手60日」)
+- コースの特徴 (`models/display_stats.json`)、新しい種牡馬の系統 (`models/lines.json`)
+- 取り込んだ出走記録 (`data/weekly/<日付>.jsonl.gz`、将来の再学習用)。どこまで取り込んだかは `models/update_state.json`
+
+学習済みモデル自体 (`win.txt` など) は毎週は作り直さない。作り直しには全レースのDB (数百MB) と約1時間の計算が要り、
+検証でも数か月分のデータ追加では成績がほとんど変わらなかったため。手で動かす場合:
+
+```bash
+cd keiba
+pip install -r requirements.txt
+python backtest/weekly_update.py            # 前回の続きから昨日までを取り込む
+python backtest/weekly_update.py --dry-run  # 対象のレースだけ表示
+```
+
 ## モデルを作り直す## モデルを作り直す
 
 ```bash
