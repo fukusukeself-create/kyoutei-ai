@@ -11,6 +11,7 @@ GROUPS = {
            "jockey_venue_win", "trainer_sb_win", "jt_combo_win", "jt_combo_n"],
     "oik": ["oik_rank", "oik_rank_rel", "oik_critic_win"],
     "lines": ["sire_line_sb_win", "sire_line_sb_n", "damsire_line_s_win", "nick_win", "nick_n"],
+    "course": ["weather", "course_waku_win", "course_style_win", "course_n", "cond_style_win"],
 }
 ONLY = [g for g in (os.environ.get("ABL_GROUPS") or "").split(",") if g]
 if ONLY:
@@ -18,7 +19,7 @@ if ONLY:
 ALL_NEW = [f for g in GROUPS.values() for f in g]
 NEW_ANY = ["jockey_form_win", "jockey_form_n", "trainer_form_win", "trainer_form_n", "jockey_venue_win", "trainer_sb_win",
            "jt_combo_win", "jt_combo_n", "oik_rank", "oik_rank_rel", "oik_critic_win", "sire_line_sb_win", "sire_line_sb_n",
-           "damsire_line_s_win", "nick_win", "nick_n"]
+           "damsire_line_s_win", "nick_win", "nick_n", "weather", "course_waku_win", "course_style_win", "course_n", "cond_style_win"]
 BASE = [f for f in F.FEATURES if f not in NEW_ANY]
 VARIANTS = {"base": BASE, **{f"+{k}": BASE + v for k, v in GROUPS.items()}}
 if len(GROUPS) > 1:

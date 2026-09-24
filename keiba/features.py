@@ -48,15 +48,35 @@ FEATURES = [
     # 騎手・調教師の調子 (直近60日) と、コース・コンビ別の成績
     "jockey_form_win", "jockey_form_n", "trainer_form_win", "trainer_form_n",
     "jockey_venue_win", "trainer_sb_win", "jt_combo_win", "jt_combo_n",
+    # 競馬場・コースの特徴 (コース別の枠と脚質の有利不利、馬場状態×脚質) と天気
+    "weather", "course_waku_win", "course_style_win", "course_n", "cond_style_win",
     # 血統・人
     "sire_win", "sire_top3", "sire_n", "sire_sb_win", "sire_sb_top3", "sire_sb_n",
     "damsire_win", "damsire_top3", "damsire_s_win", "damsire_s_n",
     "jockey_win", "jockey_top3", "jockey_n", "trainer_win", "trainer_top3", "trainer_n",
 ]
-CATEGORICAL = ["surface", "band", "venue", "cond", "sex", "style"]
+CATEGORICAL = ["surface", "band", "venue", "cond", "sex", "style", "weather"]
 
 
 OIK_RANK = {"A": 4, "B": 3, "C": 2, "D": 1, "E": 0}
+WEATHER_CODE = {"晴": 0, "曇": 1, "小雨": 2, "雨": 3, "小雪": 4, "雪": 5}
+STYLE_NAMES = {"逃": "逃げ", "先": "先行", "差": "差し", "追": "追込"}
+
+
+def waku_band(waku) -> str:
+    try:
+        w = int(waku)
+    except (TypeError, ValueError):
+        return ""
+    return "内" if w <= 3 else "中" if w <= 5 else "外" if w <= 8 else ""
+
+
+def course_key(venue: str, surface: str, distance) -> str:
+    return f"{venue}|{surface}|{distance}"
+
+
+def wet_key(condition: str) -> str:
+    return "重" if COND_CODE.get(condition or "", 0) >= 2 else "良"
 FORM_DAYS = 60
 
 
@@ -235,6 +255,7 @@ def race_context(race: dict, runners: list[dict], day: Optional[dict] = None) ->
         heads=int(race.get("heads") or len(runners)),
         cls_rank=class_rank(" ".join([race.get("cls", ""), race.get("grade", ""), race.get("name", "")])),
         turn_right=1 if race.get("turn") == "右" else 0,
+        weather=WEATHER_CODE.get(race.get("weather") or "", -1),
         n_nige=sum(1 for s in styles if s == "逃"),
         n_front=sum(1 for s in styles if s in ("逃", "先")),
         mean_weight=sum(weights) / len(weights) if weights else 0.0,
@@ -251,7 +272,7 @@ def runner_features(r: dict, ctx: dict, stats: dict) -> dict:
     """r: waku, umaban, sex_age, weight, jockey, trainer, sire, damsire, style, interval, rest_note,
     body_weight, past(list)。stats: {sire, sire_sb, damsire, damsire_s, jockey, trainer, base_win, base_top3}"""
     f: dict = {k: ctx[k] for k in ("surface", "distance", "band", "venue", "cond", "heads", "cls_rank",
-                                   "turn_right", "n_nige", "n_front")}
+                                   "turn_right", "n_nige", "n_front", "weather")}
     heads = ctx["heads"] or 1
     f["waku"] = r.get("waku") or 0
     f["umaban"] = r.get("umaban") or 0
@@ -451,6 +472,10 @@ def runner_features(r: dict, ctx: dict, stats: dict) -> dict:
     f["jockey_venue_win"], _ = _rate(stats.get("jockey_venue", {}), f"{jockey_key(r.get('jockey'))}|{ctx['venue_str']}", "win", bw_)
     f["trainer_sb_win"], _ = _rate(stats.get("trainer_sb", {}), f"{trainer_key(r.get('trainer'))}|{ctx['surface_str']}|{ctx['band']}", "win", bw_)
     f["jt_combo_win"], f["jt_combo_n"] = _rate(stats.get("jt_combo", {}), f"{jockey_key(r.get('jockey'))}|{trainer_key(r.get('trainer'))}", "win", bw_)
+    ck = course_key(ctx["venue_str"], ctx["surface_str"], ctx["distance"])
+    f["course_waku_win"], f["course_n"] = _rate(stats.get("course_waku", {}), f"{ck}|{waku_band(r.get('waku'))}", "win", bw_)
+    f["course_style_win"], _ = _rate(stats.get("course_style", {}), f"{ck}|{r.get('style') or ''}", "win", bw_)
+    f["cond_style_win"], _ = _rate(stats.get("cond_style", {}), f"{ctx['surface_str']}|{wet_key(ctx['cond_str'])}|{r.get('style') or ''}", "win", bw_)
     f["jockey_s_win"], _ = _rate(stats.get("jockey_s", {}), f"{jk}|{ctx['surface_str']}", "win", bw_)
     f["trainer_s_win"], _ = _rate(stats.get("trainer_s", {}), f"{tr}|{ctx['surface_str']}", "win", bw_)
     wet = "wet" if ctx["cond"] >= 2 else "dry"
@@ -463,7 +488,8 @@ def build_stats(rows) -> dict:
     学習期間から成績表と標準時計表を作る。"""
     import statistics
     TABLE_KEYS = ("sire", "sire_sb", "damsire", "damsire_s", "jockey", "trainer", "jockey_s", "trainer_s", "sire_cond",
-                  "critic", "sire_line_sb", "damsire_line_s", "nick", "jockey_venue", "trainer_sb", "jt_combo")
+                  "critic", "sire_line_sb", "damsire_line_s", "nick", "jockey_venue", "trainer_sb", "jt_combo",
+                  "course_waku", "course_style", "cond_style")
     tables = {k: {} for k in TABLE_KEYS}
     n_all = w_all = t_all = 0
     times: dict[str, list[float]] = {}
@@ -508,6 +534,10 @@ def build_stats(rows) -> dict:
         add(tables["jockey_venue"], f"{jk}|{r.get('venue')}", fin)
         add(tables["trainer_sb"], f"{tr}|{r.get('surface')}|{band}", fin)
         add(tables["jt_combo"], f"{jk}|{tr}", fin)
+        ck = course_key(r.get("venue"), r.get("surface"), r.get("distance"))
+        add(tables["course_waku"], f"{ck}|{waku_band(r.get('waku'))}", fin)
+        add(tables["course_style"], f"{ck}|{r.get('style') or ''}", fin)
+        add(tables["cond_style"], f"{r.get('surface')}|{wet_key(r.get('condition'))}|{r.get('style') or ''}", fin)
         t = time_sec(r.get("time") or "")
         if t and r.get("venue"):
             times.setdefault(time_key(r["venue"], r.get("surface", ""), r.get("distance"), r.get("condition", "")), []).append(t)
@@ -596,3 +626,19 @@ def career_asof(car: Optional[dict], date_ord: int) -> dict:
     out["days_since"] = (date_ord - dates[-1]) if dates else float("nan")
     out["n_180d"] = sum(1 for d in dates if date_ord - d <= 180)
     return out
+
+
+def course_profile(stats: dict, venue: str, surface: str, distance, condition: str) -> dict:
+    """画面表示用: このコースの枠 (内/中/外) と脚質の勝率、馬場状態×脚質の勝率。件数も返す。"""
+    base = stats.get("base_win", 0.07)
+    ck = course_key(venue, surface, distance)
+    def get(tbl, key):
+        v = stats.get(tbl, {}).get(key)
+        return (v[1] / v[0], v[0]) if v and v[0] else (None, 0)
+    return dict(
+        base=base,
+        waku={b: get("course_waku", f"{ck}|{b}") for b in ("内", "中", "外")},
+        style={n: get("course_style", f"{ck}|{s}") for s, n in STYLE_NAMES.items()},
+        cond_style={n: get("cond_style", f"{surface}|{wet_key(condition)}|{s}") for s, n in STYLE_NAMES.items()},
+        wet=wet_key(condition),
+    )

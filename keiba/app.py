@@ -403,6 +403,30 @@ if res and res["race_id"] == (rs.race_id if rs else None):
                      "根拠": " / ".join(est["notes"].get(u, []))})
     st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True,
                  column_config={"馬番": st.column_config.NumberColumn(width="small"), "印": st.column_config.TextColumn(width="small")})
+    # --- コースの特徴 (過去データ)
+    if statmodel.available() and race.surface in ("芝", "ダ"):
+        import features as F
+        prof = F.course_profile(statmodel.load()["stats"], race.venue, race.surface, race.distance, race.condition)
+        def cell(v):
+            r, n = v
+            if r is None or n < 30:
+                return "-"
+            mark = " ◎" if r >= prof["base"] * 1.25 else " ×" if r <= prof["base"] * 0.75 else ""
+            return f"{r*100:.1f}%{mark}" + (" (少)" if n < 150 else "")
+        rows_c = [
+            {"区分": "枠", **{k: cell(v) for k, v in prof["waku"].items()}},
+        ]
+        rows_s = [
+            {"区分": f"{race.venue}{race.course}", **{k: cell(v) for k, v in prof["style"].items()}},
+            {"区分": f"{race.surface} {'重・不良' if prof['wet'] == '重' else '良・稍重'}", **{k: cell(v) for k, v in prof["cond_style"].items()}},
+        ]
+        st.markdown(f'<div class="sec">コースの特徴 ({race.venue} {race.course}・馬場 {race.condition or "-"}・天候 {race.weather or "-"})</div>',
+                    unsafe_allow_html=True)
+        st.dataframe(pd.DataFrame(rows_c), hide_index=True, use_container_width=True)
+        st.dataframe(pd.DataFrame(rows_s), hide_index=True, use_container_width=True)
+        st.markdown(f'<div class="note">過去レースでの勝率 (平均 {prof["base"]*100:.1f}%)。◎ = 平均の1.25倍以上で有利、× = 0.75倍以下で不利、(少) = 件数が少なく参考程度。'
+                    '内枠 = 1〜3枠、中 = 4〜5枠、外 = 6〜8枠。脚質は各馬のふだんの脚質。</div>', unsafe_allow_html=True)
+
     if info.get("_form_asof"):
         st.markdown(f'<div class="note">調教 = 追い切り評価 (A〜D と短評)。騎手60日 = 直近60日の 勝利/騎乗 ({info["_form_asof"]} までのデータ)。系統は父・母父の父系。</div>',
                     unsafe_allow_html=True)
