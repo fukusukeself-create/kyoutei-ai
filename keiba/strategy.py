@@ -479,3 +479,11 @@ def noskip_bets(win: dict[int, float], odds: dict[str, dict[str, float]] | None,
         if mm and mm.group(1) in ranked:
             out.extend(ranked[mm.group(1)][: int(mm.group(2))])
     return out
+
+
+def trio_top(win: dict[int, float], odds: dict[str, dict[str, float]] | None, k: int = 5) -> list[Ticket]:
+    """三連複を確率の高い順に k 点 (実オッズがあれば付ける)。"""
+    trio = combo_probs(win)["trio"]
+    table = (odds or {}).get("sanrenpuku", {})
+    ranked = sorted(trio.items(), key=lambda kv: -kv[1])[:k]
+    return [Ticket("三連複", c, p, _odds_of(table, c)) for c, p in ranked]
