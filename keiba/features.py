@@ -216,12 +216,17 @@ def time_index(stats: dict, venue: str, surface: str, distance, condition: str, 
     return (med - t) / max(sd, 0.3)
 
 
-def _rate(tbl: dict, key: str, kind: str, base: float) -> tuple[float, float]:
-    """平滑化した率と件数。tbl[key] = [n, wins, top3]"""
+def _rate(tbl: dict, key: str, kind: str, base: float, own_finish: Optional[int] = None) -> tuple[float, float]:
+    """平滑化した率と件数。tbl[key] = [n, wins, top3]。
+    own_finish を渡すと、その1走を集計から抜く (学習用の行で自分の結果を見ないため)。"""
     v = tbl.get(key)
     if not v:
         return base, 0.0
     n, wins, top3 = v
+    if own_finish:
+        n, wins, top3 = n - 1, wins - (1 if own_finish == 1 else 0), top3 - (1 if own_finish <= 3 else 0)
+        if n <= 0:
+            return base, 0.0
     num = wins if kind == "win" else top3
     return (num + PRIOR_N * base) / (n + PRIOR_N), float(n)
 
@@ -271,6 +276,12 @@ def race_context(race: dict, runners: list[dict], day: Optional[dict] = None) ->
 def runner_features(r: dict, ctx: dict, stats: dict) -> dict:
     """r: waku, umaban, sex_age, weight, jockey, trainer, sire, damsire, style, interval, rest_note,
     body_weight, past(list)。stats: {sire, sire_sb, damsire, damsire_s, jockey, trainer, base_win, base_top3}"""
+    own = r.get("finish") if ctx.get("loo") else None
+
+    def rate(tbl: dict, key: str, kind: str, base: float) -> tuple[float, float]:
+        """学習用の行 (ctx["loo"]) では、集計表からその馬自身の結果を抜いて使う (自分の答えを見ない)。"""
+        return _rate(tbl, key, kind, base, own)
+
     f: dict = {k: ctx[k] for k in ("surface", "distance", "band", "venue", "cond", "heads", "cls_rank",
                                    "turn_right", "n_nige", "n_front", "weather")}
     heads = ctx["heads"] or 1
@@ -414,8 +425,8 @@ def runner_features(r: dict, ctx: dict, stats: dict) -> dict:
         prev_full = p0.get("jockey") or ""
         prev_key = next((k for k in stats.get("jockey", {}) if k and jockey_same(k, prev_full)), None)
         cur_key = re.sub(r"[▲△☆★◇]", "", r.get("jockey") or "")
-        cur_rate, _ = _rate(stats.get("jockey", {}), cur_key, "win", bw_)
-        prev_rate, _ = _rate(stats.get("jockey", {}), prev_key or "", "win", bw_)
+        cur_rate, _ = rate(stats.get("jockey", {}), cur_key, "win", bw_)
+        prev_rate, _ = _rate(stats.get("jockey", {}), prev_key or "", "win", bw_)   # 前走騎手はこの馬に乗っていないので抜かない
         f["jockey_up"] = cur_rate - prev_rate
     else:
         f["jockey_up"] = 0.0
@@ -439,29 +450,29 @@ def runner_features(r: dict, ctx: dict, stats: dict) -> dict:
     f["day_inner_top3"] = day.get("inner_top3", nan)
     sire, damsire = r.get("sire") or "", r.get("damsire") or ""
     sb_key = f"{sire}|{ctx['surface_str']}|{ctx['band']}"
-    f["sire_win"], f["sire_n"] = _rate(stats.get("sire", {}), sire, "win", bw_)
-    f["sire_top3"], _ = _rate(stats.get("sire", {}), sire, "top3", bt_)
-    f["sire_sb_win"], f["sire_sb_n"] = _rate(stats.get("sire_sb", {}), sb_key, "win", bw_)
-    f["sire_sb_top3"], _ = _rate(stats.get("sire_sb", {}), sb_key, "top3", bt_)
-    f["damsire_win"], _ = _rate(stats.get("damsire", {}), damsire, "win", bw_)
-    f["damsire_top3"], _ = _rate(stats.get("damsire", {}), damsire, "top3", bt_)
-    f["damsire_s_win"], f["damsire_s_n"] = _rate(stats.get("damsire_s", {}), f"{damsire}|{ctx['surface_str']}", "win", bw_)
+    f["sire_win"], f["sire_n"] = rate(stats.get("sire", {}), sire, "win", bw_)
+    f["sire_top3"], _ = rate(stats.get("sire", {}), sire, "top3", bt_)
+    f["sire_sb_win"], f["sire_sb_n"] = rate(stats.get("sire_sb", {}), sb_key, "win", bw_)
+    f["sire_sb_top3"], _ = rate(stats.get("sire_sb", {}), sb_key, "top3", bt_)
+    f["damsire_win"], _ = rate(stats.get("damsire", {}), damsire, "win", bw_)
+    f["damsire_top3"], _ = rate(stats.get("damsire", {}), damsire, "top3", bt_)
+    f["damsire_s_win"], f["damsire_s_n"] = rate(stats.get("damsire_s", {}), f"{damsire}|{ctx['surface_str']}", "win", bw_)
     jk = re.sub(r"[▲△☆★◇]", "", r.get("jockey") or "")
-    f["jockey_win"], f["jockey_n"] = _rate(stats.get("jockey", {}), jk, "win", bw_)
-    f["jockey_top3"], _ = _rate(stats.get("jockey", {}), jk, "top3", bt_)
+    f["jockey_win"], f["jockey_n"] = rate(stats.get("jockey", {}), jk, "win", bw_)
+    f["jockey_top3"], _ = rate(stats.get("jockey", {}), jk, "top3", bt_)
     tr = (r.get("trainer") or "").split()[-1] if r.get("trainer") else ""
-    f["trainer_win"], f["trainer_n"] = _rate(stats.get("trainer", {}), tr, "win", bw_)
-    f["trainer_top3"], _ = _rate(stats.get("trainer", {}), tr, "top3", bt_)
+    f["trainer_win"], f["trainer_n"] = rate(stats.get("trainer", {}), tr, "win", bw_)
+    f["trainer_top3"], _ = rate(stats.get("trainer", {}), tr, "top3", bt_)
     # 調教評価
     ok = r.get("oik_rank") or ""
     f["oik_rank"] = OIK_RANK.get(ok, float("nan"))
     f["oik_rank_rel"] = (f["oik_rank"] - ctx["oik_mean"]) if ok in OIK_RANK and ctx.get("oik_mean") == ctx.get("oik_mean") else float("nan")
-    f["oik_critic_win"], _ = _rate(stats.get("critic", {}), r.get("oik_critic") or "", "win", bw_)
+    f["oik_critic_win"], _ = rate(stats.get("critic", {}), r.get("oik_critic") or "", "win", bw_)
     # 血統の系統
     sl, dl = r.get("sire_line") or "", r.get("damsire_line") or ""
-    f["sire_line_sb_win"], f["sire_line_sb_n"] = _rate(stats.get("sire_line_sb", {}), f"{sl}|{ctx['surface_str']}|{ctx['band']}", "win", bw_)
-    f["damsire_line_s_win"], _ = _rate(stats.get("damsire_line_s", {}), f"{dl}|{ctx['surface_str']}", "win", bw_)
-    f["nick_win"], f["nick_n"] = _rate(stats.get("nick", {}), f"{sl}|{dl}", "win", bw_)
+    f["sire_line_sb_win"], f["sire_line_sb_n"] = rate(stats.get("sire_line_sb", {}), f"{sl}|{ctx['surface_str']}|{ctx['band']}", "win", bw_)
+    f["damsire_line_s_win"], _ = rate(stats.get("damsire_line_s", {}), f"{dl}|{ctx['surface_str']}", "win", bw_)
+    f["nick_win"], f["nick_n"] = rate(stats.get("nick", {}), f"{sl}|{dl}", "win", bw_)
     # 騎手・調教師の調子 (呼び出し側が r["jform"], r["tform"] に (騎乗数, 勝利数) を入れる)
     jn, jw = r.get("jform") or (0, 0)
     tn, tw = r.get("tform") or (0, 0)
@@ -469,17 +480,17 @@ def runner_features(r: dict, ctx: dict, stats: dict) -> dict:
     f["jockey_form_n"] = jn
     f["trainer_form_win"] = (tw + 10 * bw_) / (tn + 10)
     f["trainer_form_n"] = tn
-    f["jockey_venue_win"], _ = _rate(stats.get("jockey_venue", {}), f"{jockey_key(r.get('jockey'))}|{ctx['venue_str']}", "win", bw_)
-    f["trainer_sb_win"], _ = _rate(stats.get("trainer_sb", {}), f"{trainer_key(r.get('trainer'))}|{ctx['surface_str']}|{ctx['band']}", "win", bw_)
-    f["jt_combo_win"], f["jt_combo_n"] = _rate(stats.get("jt_combo", {}), f"{jockey_key(r.get('jockey'))}|{trainer_key(r.get('trainer'))}", "win", bw_)
+    f["jockey_venue_win"], _ = rate(stats.get("jockey_venue", {}), f"{jockey_key(r.get('jockey'))}|{ctx['venue_str']}", "win", bw_)
+    f["trainer_sb_win"], _ = rate(stats.get("trainer_sb", {}), f"{trainer_key(r.get('trainer'))}|{ctx['surface_str']}|{ctx['band']}", "win", bw_)
+    f["jt_combo_win"], f["jt_combo_n"] = rate(stats.get("jt_combo", {}), f"{jockey_key(r.get('jockey'))}|{trainer_key(r.get('trainer'))}", "win", bw_)
     ck = course_key(ctx["venue_str"], ctx["surface_str"], ctx["distance"])
-    f["course_waku_win"], f["course_n"] = _rate(stats.get("course_waku", {}), f"{ck}|{waku_band(r.get('waku'))}", "win", bw_)
-    f["course_style_win"], _ = _rate(stats.get("course_style", {}), f"{ck}|{r.get('style') or ''}", "win", bw_)
-    f["cond_style_win"], _ = _rate(stats.get("cond_style", {}), f"{ctx['surface_str']}|{wet_key(ctx['cond_str'])}|{r.get('style') or ''}", "win", bw_)
-    f["jockey_s_win"], _ = _rate(stats.get("jockey_s", {}), f"{jk}|{ctx['surface_str']}", "win", bw_)
-    f["trainer_s_win"], _ = _rate(stats.get("trainer_s", {}), f"{tr}|{ctx['surface_str']}", "win", bw_)
+    f["course_waku_win"], f["course_n"] = rate(stats.get("course_waku", {}), f"{ck}|{waku_band(r.get('waku'))}", "win", bw_)
+    f["course_style_win"], _ = rate(stats.get("course_style", {}), f"{ck}|{r.get('style') or ''}", "win", bw_)
+    f["cond_style_win"], _ = rate(stats.get("cond_style", {}), f"{ctx['surface_str']}|{wet_key(ctx['cond_str'])}|{r.get('style') or ''}", "win", bw_)
+    f["jockey_s_win"], _ = rate(stats.get("jockey_s", {}), f"{jk}|{ctx['surface_str']}", "win", bw_)
+    f["trainer_s_win"], _ = rate(stats.get("trainer_s", {}), f"{tr}|{ctx['surface_str']}", "win", bw_)
     wet = "wet" if ctx["cond"] >= 2 else "dry"
-    f["sire_wet_win"], _ = _rate(stats.get("sire_cond", {}), f"{sire}|{ctx['surface_str']}|{wet}", "win", bw_)
+    f["sire_wet_win"], _ = rate(stats.get("sire_cond", {}), f"{sire}|{ctx['surface_str']}|{wet}", "win", bw_)
     return f
 
 
