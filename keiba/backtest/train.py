@@ -41,7 +41,41 @@ def load(db_path: str):
     con.close()
     runners = runners[runners.race_id.isin(races.race_id)]
     runners = runners.merge(races[["race_id", "date", "surface", "distance", "venue", "condition"]], on="race_id")
+    runners = attach_extra(runners, db_path)
     return races, runners
+
+
+def load_lines(db_path: str) -> tuple[dict, dict]:
+    """父→系統、母父→系統 の対応表 (collect_extra.py pedigree が作る)。無ければ空。"""
+    con = sqlite3.connect(db_path)
+    try:
+        sire = {}
+        for name, line, n in con.execute("SELECT sire, sire_line, COUNT(*) FROM ped_horse WHERE sire_line != '' GROUP BY sire, sire_line"):
+            if name not in sire or n > sire[name][1]:
+                sire[name] = (line, n)
+        dam = {name: line for name, line in con.execute("SELECT name, line FROM damsire_line WHERE line != ''")}
+    except sqlite3.OperationalError:
+        return {}, {}
+    finally:
+        con.close()
+    return {k: v[0] for k, v in sire.items()}, dam
+
+
+def attach_extra(runners: pd.DataFrame, db_path: str) -> pd.DataFrame:
+    """調教評価と、父・母父の系統を出走馬に付ける。"""
+    con = sqlite3.connect(db_path)
+    try:
+        oik = pd.read_sql("SELECT race_id, umaban, critic AS oik_critic, rank AS oik_rank FROM oikiri", con)
+    except Exception:
+        oik = pd.DataFrame(columns=["race_id", "umaban", "oik_critic", "oik_rank"])
+    con.close()
+    runners = runners.merge(oik, on=["race_id", "umaban"], how="left")
+    sire_line, dam_line = load_lines(db_path)
+    runners["sire_line"] = runners["sire"].map(sire_line).fillna("")
+    runners["damsire_line"] = runners["damsire"].map(dam_line).fillna("")
+    runners["oik_critic"] = runners["oik_critic"].fillna("")
+    runners["oik_rank"] = runners["oik_rank"].fillna("")
+    return runners
 
 
 def _with_past(runners: pd.DataFrame) -> list[dict]:
@@ -60,12 +94,14 @@ def _date_ord(d: str) -> int:
 
 
 def build_rows(races: pd.DataFrame, runners: pd.DataFrame, stats: dict, career: dict | None = None,
-               career_seed: dict | None = None) -> pd.DataFrame:
+               career_seed: dict | None = None, form: dict | None = None) -> pd.DataFrame:
     """特徴量の行を作る。日付順に処理し、馬の通算 (career) と当日の傾向は「そのレースより前」の情報だけで作る。
     career を渡すとその dict を更新しながら使う (学習→検証と続けて呼べる)。"""
     rows = []
     race_map = races.set_index("race_id").to_dict("index")
     career = career if career is not None else {}
+    form = form if form is not None else {"j": {}, "t": {}}
+    form.setdefault("j", {}); form.setdefault("t", {})
     if career_seed:
         for k, v in career_seed.items():
             career.setdefault(k, json.loads(json.dumps(v)))
@@ -84,6 +120,8 @@ def build_rows(races: pd.DataFrame, runners: pd.DataFrame, stats: dict, career: 
             except json.JSONDecodeError:
                 d["past"] = []
             d["career"] = F.career_asof(career.get(d.get("horse_id") or ""), _date_ord(date))
+            d["jform"] = F.form_asof(form["j"].get(F.jockey_key(d.get("jockey"))), _date_ord(date))
+            d["tform"] = F.form_asof(form["t"].get(F.trainer_key(d.get("trainer"))), _date_ord(date))
             rs.append(d)
         day = F.day_bias(day_state.get((date, venue), []))
         ctx = F.race_context(race, rs, day)
@@ -94,7 +132,12 @@ def build_rows(races: pd.DataFrame, runners: pd.DataFrame, stats: dict, career: 
             f.update(race_id=rid, date=race["date"], umaban_id=d["umaban"], finish=d["finish"], odds=d["odds"],
                      ninki=d["ninki"], is_win=int(d["finish"] == 1), is_top3=int(d["finish"] <= 3))
             rows.append(f)
-        # 出走後: 通算と当日傾向を更新
+        # 出走後: 騎手・調教師の調子、通算、当日傾向を更新
+        for d in rs:
+            if d.get("finish"):
+                win = 1 if d["finish"] == 1 else 0
+                F.form_update(form["j"].setdefault(F.jockey_key(d.get("jockey")), []), _date_ord(date), win)
+                F.form_update(form["t"].setdefault(F.trainer_key(d.get("trainer")), []), _date_ord(date), win)
         for d in rs:
             hid = d.get("horse_id") or ""
             if not hid or not d.get("finish"):
@@ -262,8 +305,9 @@ def main():
             continue
         stats = F.build_stats(_with_past(tr_r))
         career: dict = {}
-        df_tr = build_rows(races[races.date < start], tr_r, stats, career)
-        df_va = build_rows(va_races, runners[runners.race_id.isin(va_races.race_id)], stats, career)
+        form: dict = {"j": {}, "t": {}}
+        df_tr = build_rows(races[races.date < start], tr_r, stats, career, form=form)
+        df_va = build_rows(va_races, runners[runners.race_id.isin(va_races.race_id)], stats, career, form=form)
         top3_m = fit(df_tr, "is_top3")
         if args.objective == "rank":
             win_m, temp = fit_rank(df_tr)
@@ -320,8 +364,15 @@ def main():
     # 本番用: 全期間で学習
     stats_all = F.build_stats(_with_past(runners))
     career_all: dict = {}
+    form_all: dict = {"j": {}, "t": {}}
     os.makedirs(args.out, exist_ok=True)
-    df_all = build_rows(races, runners, stats_all, career_all)
+    df_all = build_rows(races, runners, stats_all, career_all, form=form_all)
+    # 本番用: 騎手・調教師の直近の成績 (日付序数, 勝ち) と、父・母父の系統表
+    with open(os.path.join(args.out, "form.json"), "w", encoding="utf-8") as fp:
+        json.dump(form_all, fp, ensure_ascii=False, separators=(",", ":"))
+    sire_line, dam_line = load_lines(args.db)
+    with open(os.path.join(args.out, "lines.json"), "w", encoding="utf-8") as fp:
+        json.dump(dict(sire=sire_line, damsire=dam_line), fp, ensure_ascii=False, separators=(",", ":"))
     # 本番用: 馬ごとの通算 (最新時点)。dates は直近12走の日付序数
     with open(os.path.join(args.out, "horses.json"), "w", encoding="utf-8") as fp:
         json.dump(career_all, fp, ensure_ascii=False, separators=(",", ":"))

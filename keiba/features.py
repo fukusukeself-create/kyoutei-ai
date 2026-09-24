@@ -41,12 +41,51 @@ FEATURES = [
     # 馬の通算 (car_*) は足し引き実験で悪化したため学習に使わない (計算はしている)
     # 当日の馬場傾向 (同じ日・同じ場で先に終わったレースから)
     "day_done", "day_front_win", "day_inner_win", "day_inner_top3",
+    # 調教評価 (追い切り: A〜D と短評)
+    "oik_rank", "oik_rank_rel", "oik_critic_win",
+    # 血統の系統 (父系統×芝ダ×距離帯、母父系統×芝ダ、父系統×母父系統のニックス)
+    "sire_line_sb_win", "sire_line_sb_n", "damsire_line_s_win", "nick_win", "nick_n",
+    # 騎手・調教師の調子 (直近60日) と、コース・コンビ別の成績
+    "jockey_form_win", "jockey_form_n", "trainer_form_win", "trainer_form_n",
+    "jockey_venue_win", "trainer_sb_win", "jt_combo_win", "jt_combo_n",
     # 血統・人
     "sire_win", "sire_top3", "sire_n", "sire_sb_win", "sire_sb_top3", "sire_sb_n",
     "damsire_win", "damsire_top3", "damsire_s_win", "damsire_s_n",
     "jockey_win", "jockey_top3", "jockey_n", "trainer_win", "trainer_top3", "trainer_n",
 ]
 CATEGORICAL = ["surface", "band", "venue", "cond", "sex", "style"]
+
+
+OIK_RANK = {"A": 4, "B": 3, "C": 2, "D": 1, "E": 0}
+FORM_DAYS = 60
+
+
+def jockey_key(j: str) -> str:
+    return re.sub(r"[▲△☆★◇]", "", j or "")
+
+
+def trainer_key(t: str) -> str:
+    return (t or "").split()[-1] if t else ""
+
+
+def form_asof(hist: Optional[list], date_ord: int, days: int = FORM_DAYS) -> tuple[int, int]:
+    """騎手・調教師の直近 days 日の (騎乗数, 勝利数)。hist は [(日付序数, 1着なら1)] で古い順。"""
+    if not hist:
+        return 0, 0
+    n = w = 0
+    for d, win in reversed(hist):
+        if date_ord - d > days:
+            break
+        if d < date_ord:
+            n += 1
+            w += win
+    return n, w
+
+
+def form_update(hist: list, date_ord: int, win: int, keep_days: int = FORM_DAYS) -> None:
+    hist.append((date_ord, win))
+    while hist and date_ord - hist[0][0] > keep_days:
+        hist.pop(0)
 
 
 def dist_band(d: int) -> int:
@@ -203,6 +242,8 @@ def race_context(race: dict, runners: list[dict], day: Optional[dict] = None) ->
         venue_str=race.get("venue", ""),
         cond_str=race.get("condition", ""),
         day=day or {},
+        oik_mean=(sum(OIK_RANK[r["oik_rank"]] for r in runners if r.get("oik_rank") in OIK_RANK) /
+                  max(1, sum(1 for r in runners if r.get("oik_rank") in OIK_RANK))) if any(r.get("oik_rank") in OIK_RANK for r in runners) else float("nan"),
     )
 
 
@@ -390,6 +431,26 @@ def runner_features(r: dict, ctx: dict, stats: dict) -> dict:
     tr = (r.get("trainer") or "").split()[-1] if r.get("trainer") else ""
     f["trainer_win"], f["trainer_n"] = _rate(stats.get("trainer", {}), tr, "win", bw_)
     f["trainer_top3"], _ = _rate(stats.get("trainer", {}), tr, "top3", bt_)
+    # 調教評価
+    ok = r.get("oik_rank") or ""
+    f["oik_rank"] = OIK_RANK.get(ok, float("nan"))
+    f["oik_rank_rel"] = (f["oik_rank"] - ctx["oik_mean"]) if ok in OIK_RANK and ctx.get("oik_mean") == ctx.get("oik_mean") else float("nan")
+    f["oik_critic_win"], _ = _rate(stats.get("critic", {}), r.get("oik_critic") or "", "win", bw_)
+    # 血統の系統
+    sl, dl = r.get("sire_line") or "", r.get("damsire_line") or ""
+    f["sire_line_sb_win"], f["sire_line_sb_n"] = _rate(stats.get("sire_line_sb", {}), f"{sl}|{ctx['surface_str']}|{ctx['band']}", "win", bw_)
+    f["damsire_line_s_win"], _ = _rate(stats.get("damsire_line_s", {}), f"{dl}|{ctx['surface_str']}", "win", bw_)
+    f["nick_win"], f["nick_n"] = _rate(stats.get("nick", {}), f"{sl}|{dl}", "win", bw_)
+    # 騎手・調教師の調子 (呼び出し側が r["jform"], r["tform"] に (騎乗数, 勝利数) を入れる)
+    jn, jw = r.get("jform") or (0, 0)
+    tn, tw = r.get("tform") or (0, 0)
+    f["jockey_form_win"] = (jw + 10 * bw_) / (jn + 10)
+    f["jockey_form_n"] = jn
+    f["trainer_form_win"] = (tw + 10 * bw_) / (tn + 10)
+    f["trainer_form_n"] = tn
+    f["jockey_venue_win"], _ = _rate(stats.get("jockey_venue", {}), f"{jockey_key(r.get('jockey'))}|{ctx['venue_str']}", "win", bw_)
+    f["trainer_sb_win"], _ = _rate(stats.get("trainer_sb", {}), f"{trainer_key(r.get('trainer'))}|{ctx['surface_str']}|{ctx['band']}", "win", bw_)
+    f["jt_combo_win"], f["jt_combo_n"] = _rate(stats.get("jt_combo", {}), f"{jockey_key(r.get('jockey'))}|{trainer_key(r.get('trainer'))}", "win", bw_)
     f["jockey_s_win"], _ = _rate(stats.get("jockey_s", {}), f"{jk}|{ctx['surface_str']}", "win", bw_)
     f["trainer_s_win"], _ = _rate(stats.get("trainer_s", {}), f"{tr}|{ctx['surface_str']}", "win", bw_)
     wet = "wet" if ctx["cond"] >= 2 else "dry"
@@ -401,7 +462,9 @@ def build_stats(rows) -> dict:
     """rows: iterable of dict(sire, damsire, jockey, trainer, surface, distance, finish, venue, condition, time, past)。
     学習期間から成績表と標準時計表を作る。"""
     import statistics
-    tables = {k: {} for k in ("sire", "sire_sb", "damsire", "damsire_s", "jockey", "trainer", "jockey_s", "trainer_s", "sire_cond")}
+    TABLE_KEYS = ("sire", "sire_sb", "damsire", "damsire_s", "jockey", "trainer", "jockey_s", "trainer_s", "sire_cond",
+                  "critic", "sire_line_sb", "damsire_line_s", "nick", "jockey_venue", "trainer_sb", "jt_combo")
+    tables = {k: {} for k in TABLE_KEYS}
     n_all = w_all = t_all = 0
     times: dict[str, list[float]] = {}
     agaris: dict[str, list[float]] = {}
@@ -434,6 +497,17 @@ def build_stats(rows) -> dict:
         add(tables["trainer_s"], f"{tr}|{r.get('surface')}", fin)
         wet = "wet" if COND_CODE.get(r.get("condition") or "", 0) >= 2 else "dry"
         add(tables["sire_cond"], f"{r.get('sire')}|{r.get('surface')}|{wet}", fin)
+        add(tables["critic"], r.get("oik_critic") or "", fin)
+        sl, dl = r.get("sire_line") or "", r.get("damsire_line") or ""
+        if sl:
+            add(tables["sire_line_sb"], f"{sl}|{r.get('surface')}|{band}", fin)
+        if dl:
+            add(tables["damsire_line_s"], f"{dl}|{r.get('surface')}", fin)
+        if sl and dl:
+            add(tables["nick"], f"{sl}|{dl}", fin)
+        add(tables["jockey_venue"], f"{jk}|{r.get('venue')}", fin)
+        add(tables["trainer_sb"], f"{tr}|{r.get('surface')}|{band}", fin)
+        add(tables["jt_combo"], f"{jk}|{tr}", fin)
         t = time_sec(r.get("time") or "")
         if t and r.get("venue"):
             times.setdefault(time_key(r["venue"], r.get("surface", ""), r.get("distance"), r.get("condition", "")), []).append(t)
@@ -451,7 +525,7 @@ def build_stats(rows) -> dict:
     tables["agari_std"] = {k: [round(statistics.median(v), 2), round(statistics.pstdev(v), 3)]
                            for k, v in agaris.items() if len(v) >= 100}
     # 件数の少ない鍵は捨てて表を小さくする (平滑化で全体平均に近いので落としても影響が小さい)
-    for k in ("sire", "sire_sb", "damsire", "damsire_s", "jockey", "trainer", "jockey_s", "trainer_s", "sire_cond"):
+    for k in TABLE_KEYS:
         tables[k] = {key: v for key, v in tables[k].items() if v[0] >= 5}
     tables["base_win"] = w_all / n_all if n_all else 0.08
     tables["base_top3"] = t_all / n_all if n_all else 0.24

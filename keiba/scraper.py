@@ -222,6 +222,8 @@ class Horse:
     sire: str = ""
     dam: str = ""
     damsire: str = ""
+    oik_rank: str = ""      # 調教評価 A〜D
+    oik_critic: str = ""    # 調教の短評 (動き鋭い 等)
     style: str = ""     # 逃/先/差/追
     interval: str = ""  # "中12週"
     rest_note: str = ""
@@ -430,6 +432,30 @@ def attach_past(race: Race, past: dict[int, dict]) -> Race:
             h.past = p["past"]
             if not h.body_weight and p.get("body_weight"):
                 h.body_weight = p["body_weight"]
+    return race
+
+
+# ---------------------------------------------------------------- 調教評価 (追い切り)
+
+def fetch_oikiri(race_id: str) -> dict[int, tuple[str, str]]:
+    """馬番 -> (短評, ランク A〜D)。未掲載なら空。"""
+    html = _get(f"{BASE}/race/oikiri.html?race_id={race_id}")
+    soup = BeautifulSoup(html, "html.parser")
+    out: dict[int, tuple[str, str]] = {}
+    for tr in soup.select("table.OikiriTable tr.HorseList"):
+        u = tr.select_one(".Umaban")
+        if not u or not _text(u).isdigit():
+            continue
+        critic = tr.select_one(".Training_Critic")
+        rank = tr.select_one("td[class^=Rank_]")
+        out[int(_text(u))] = (_text(critic), _text(rank))
+    return out
+
+
+def attach_oikiri(race: "Race", oik: dict[int, tuple[str, str]]) -> "Race":
+    for h in race.horses:
+        if h.umaban in oik:
+            h.oik_critic, h.oik_rank = oik[h.umaban]
     return race
 
 

@@ -78,6 +78,10 @@ def load_race(race_id: str, date: str):
         scraper.attach_past(race, scraper.fetch_past(race_id))
     except scraper.ScrapeError:
         pass
+    try:
+        scraper.attach_oikiri(race, scraper.fetch_oikiri(race_id))
+    except scraper.ScrapeError:
+        pass
     return race
 
 
@@ -414,17 +418,26 @@ if res and res["race_id"] == (rs.race_id if rs else None):
 
     # --- 印・勝率
     st.markdown('<div class="sec">印・推定勝率</div>', unsafe_allow_html=True)
+    info = statmodel.horse_info(race) if statmodel.available() else {}
     rows = []
     for h in ranked:
         u = h.umaban
         p = plan.win_probs.get(u, 0)
         o = odds.get("win", {}).get(f"{u:02d}")
+        hi = info.get(u, {})
+        jn, jw = hi.get("jockey_form", (0, 0))
         rows.append({"印": plan.marks.get(u, ""), "馬番": u, "馬名": h.name, "勝率": f"{p*100:.1f}%",
                      "3着内": f"{plan.place_probs.get(u, 0)*100:.0f}%", "単勝": f"{o:.1f}" if o else "-",
-                     "期待値": f"{p*o:.2f}" if o else "-", "騎手": h.jockey,
+                     "期待値": f"{p*o:.2f}" if o else "-",
+                     "調教": f"{h.oik_rank} {h.oik_critic}".strip() or "-",
+                     "騎手": h.jockey, "騎手60日": f"{jw}/{jn}" if jn else "-",
+                     "父系統": hi.get("sire_line") or "-", "母父系統": hi.get("damsire_line") or "-",
                      "根拠": " / ".join(est["notes"].get(u, []))})
     st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True,
                  column_config={"馬番": st.column_config.NumberColumn(width="small"), "印": st.column_config.TextColumn(width="small")})
+    if info.get("_form_asof"):
+        st.markdown(f'<div class="note">調教 = 追い切り評価 (A〜D と短評)。騎手60日 = 直近60日の 勝利/騎乗 ({info["_form_asof"]} までのデータ)。系統は父・母父の父系。</div>',
+                    unsafe_allow_html=True)
     if est["engine"] == "統計+市場補正":
         st.markdown('<div class="note">勝率は市場 (単勝オッズ) を土台に、馬柱・血統・騎手・時計・展開の統計で補正し、補正のずれを検証で決めた比率に縮めたもの。期待値 = 勝率 × 単勝オッズで、1.0 超は市場が過小評価していると判断した馬。</div>', unsafe_allow_html=True)
     else:
@@ -437,7 +450,8 @@ if res and res["race_id"] == (rs.race_id if rs else None):
                 + (f" ({p['margin']:+.1f})" if p.get('margin') is not None else "") for p in h.past[:5]) or "近走なし"
             st.markdown(
                 f'{waku_html(h.waku)} **{h.umaban} {h.name}** <span class="note">{h.sex_age} {h.weight}kg {h.jockey} / {h.trainer}'
-                f' / {h.body_weight or "馬体重未発表"} / {h.style or "-"} {h.interval}<br>父 {h.sire or "-"} 母父 {h.damsire or "-"}</span>'
+                f' / {h.body_weight or "馬体重未発表"} / {h.style or "-"} {h.interval}<br>父 {h.sire or "-"} 母父 {h.damsire or "-"}'
+                f' / 調教 {(h.oik_rank + " " + h.oik_critic).strip() or "-"}</span>'
                 f'<br><span class="note">{past}</span>', unsafe_allow_html=True)
 
     if date_str <= now.strftime("%Y%m%d"):

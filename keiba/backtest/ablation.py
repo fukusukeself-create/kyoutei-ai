@@ -22,9 +22,9 @@ for start, end in T.FOLDS:
     tr_r = runners[runners.date < start]
     va_races = races[(races.date >= start) & (races.date < end)]
     stats = F.build_stats(T._with_past(tr_r))
-    career = {}
-    df_tr = T.build_rows(races[races.date < start], tr_r, stats, career)
-    df_va = T.build_rows(va_races, runners[runners.race_id.isin(va_races.race_id)], stats, career)
+    career, form = {}, {"j": {}, "t": {}}
+    df_tr = T.build_rows(races[races.date < start], tr_r, stats, career, form=form)
+    df_va = T.build_rows(va_races, runners[runners.race_id.isin(va_races.race_id)], stats, career, form=form)
     df_va["p_market"] = T.market_prob(df_va)
     folds.append((start, df_tr, df_va))
     print("rows ready", start, len(df_tr), len(df_va), flush=True)

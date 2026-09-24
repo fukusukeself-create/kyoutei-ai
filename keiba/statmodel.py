@@ -51,6 +51,16 @@ def load() -> Optional[dict]:
                 horses = json.load(fp)
         except Exception:
             horses = {}
+        try:
+            with open(os.path.join(MODEL_DIR, "lines.json"), encoding="utf-8") as fp:
+                lines = json.load(fp)
+        except Exception:
+            lines = {"sire": {}, "damsire": {}}
+        try:
+            with open(os.path.join(MODEL_DIR, "form.json"), encoding="utf-8") as fp:
+                form = json.load(fp)
+        except Exception:
+            form = {"j": {}, "t": {}}
         with open(os.path.join(MODEL_DIR, "meta.json"), encoding="utf-8") as fp:
             meta = json.load(fp)
         policy = None
@@ -66,7 +76,7 @@ def load() -> Optional[dict]:
         except Exception:
             value_policy = None
         _cache["m"] = dict(win=win, win_mkt=win_mkt, top3=top3, stats=stats, meta=meta, policy=policy,
-                           value_policy=value_policy, horses=horses)
+                           value_policy=value_policy, horses=horses, lines=lines, form=form)
     except Exception:
         _cache["m"] = None
     return _cache["m"]
@@ -97,8 +107,13 @@ def predict(race: Race, win_odds: Optional[dict[str, float]] = None, day: Option
         date_ord = _dt.date(int(race.date[:4]), int(race.date[4:6]), int(race.date[6:8])).toordinal()
     except (ValueError, TypeError):
         date_ord = _dt.date.today().toordinal()
+    lines, form = m.get("lines") or {}, m.get("form") or {}
     for r in runners:
         r["career"] = F.career_asof(m.get("horses", {}).get(r.get("horse_id") or ""), date_ord)
+        r["sire_line"] = (lines.get("sire") or {}).get(r.get("sire") or "", "")
+        r["damsire_line"] = (lines.get("damsire") or {}).get(r.get("damsire") or "", "")
+        r["jform"] = F.form_asof([tuple(x) for x in (form.get("j") or {}).get(F.jockey_key(r.get("jockey")), [])], date_ord)
+        r["tform"] = F.form_asof([tuple(x) for x in (form.get("t") or {}).get(F.trainer_key(r.get("trainer")), [])], date_ord)
     race_d = dict(surface=race.surface, distance=race.distance, venue=race.venue, condition=race.condition,
                   heads=race.heads, cls=race.cls, grade=race.grade, name=race.name, turn=race.turn)
     ctx = F.race_context(race_d, runners, day)
@@ -183,7 +198,35 @@ def explain(f: dict, stats: dict) -> list[str]:
         notes.append("上位騎手")
     if f.get("trainer_n", 0) >= 50 and f["trainer_win"] >= bw * 1.4:
         notes.append("好調厩舎")
+    if f.get("oik_rank") == 4:
+        notes.insert(0, "調教A")
+    elif f.get("oik_rank") == 1:
+        notes.append("調教D")
+    if f.get("jockey_form_n", 0) >= 20 and f.get("jockey_form_win", 0) >= bw * 1.6:
+        notes.append("騎手好調")
+    if f.get("nick_n", 0) >= 30 and f.get("nick_win", 0) >= bw * 1.3:
+        notes.append("ニックス良")
     bwd = f.get("bw_delta")
     if bwd == bwd and abs(bwd) >= 12:
         notes.append(f"馬体重{int(bwd):+d}kg")
-    return notes[:4]
+    return notes[:5]
+
+
+def horse_info(race: Race) -> dict[int, dict]:
+    """画面表示用: 馬番 -> {父系統, 母父系統, 騎手の直近60日, 調教師の直近60日}。"""
+    import datetime as _dt
+    m = load() or {}
+    lines, form = m.get("lines") or {}, m.get("form") or {}
+    try:
+        date_ord = _dt.date(int(race.date[:4]), int(race.date[4:6]), int(race.date[6:8])).toordinal()
+    except (ValueError, TypeError):
+        date_ord = _dt.date.today().toordinal()
+    last = max((d for hs in (form.get("j") or {}).values() for d, _ in hs), default=None)
+    out = {}
+    for h in race.horses:
+        jn, jw = F.form_asof([tuple(x) for x in (form.get("j") or {}).get(F.jockey_key(h.jockey), [])], date_ord)
+        tn, tw = F.form_asof([tuple(x) for x in (form.get("t") or {}).get(F.trainer_key(h.trainer), [])], date_ord)
+        out[h.umaban] = dict(sire_line=(lines.get("sire") or {}).get(h.sire, ""), damsire_line=(lines.get("damsire") or {}).get(h.damsire, ""),
+                             jockey_form=(jn, jw), trainer_form=(tn, tw))
+    out["_form_asof"] = _dt.date.fromordinal(last).strftime("%Y/%m/%d") if last else ""
+    return out
