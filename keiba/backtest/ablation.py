@@ -7,13 +7,23 @@ import features as F
 import train as T
 
 GROUPS = {
-    "rest_jockey": ["fresh_n", "fresh_top3", "second_n", "second_top3", "jockey_change", "jockey_up", "weight_change", "bw_trend"],
-    "career": ["car_n", "car_win", "car_top3", "car_best_tidx", "car_mean_tidx", "car_days_since", "car_n_180d", "car_surf_n", "car_surf_top3"],
-    "day": ["day_done", "day_front_win", "day_inner_win", "day_inner_top3"],
+    "jt": ["jockey_form_win", "jockey_form_n", "trainer_form_win", "trainer_form_n",
+           "jockey_venue_win", "trainer_sb_win", "jt_combo_win", "jt_combo_n"],
+    "oik": ["oik_rank", "oik_rank_rel", "oik_critic_win"],
+    "lines": ["sire_line_sb_win", "sire_line_sb_n", "damsire_line_s_win", "nick_win", "nick_n"],
 }
+ONLY = [g for g in (os.environ.get("ABL_GROUPS") or "").split(",") if g]
+if ONLY:
+    GROUPS = {k: v for k, v in GROUPS.items() if k in ONLY}
 ALL_NEW = [f for g in GROUPS.values() for f in g]
-BASE = [f for f in F.FEATURES if f not in ALL_NEW]
-VARIANTS = {"base": BASE, **{f"+{k}": BASE + v for k, v in GROUPS.items()}, "+all": F.FEATURES}
+NEW_ANY = ["jockey_form_win", "jockey_form_n", "trainer_form_win", "trainer_form_n", "jockey_venue_win", "trainer_sb_win",
+           "jt_combo_win", "jt_combo_n", "oik_rank", "oik_rank_rel", "oik_critic_win", "sire_line_sb_win", "sire_line_sb_n",
+           "damsire_line_s_win", "nick_win", "nick_n"]
+BASE = [f for f in F.FEATURES if f not in NEW_ANY]
+VARIANTS = {"base": BASE, **{f"+{k}": BASE + v for k, v in GROUPS.items()}}
+if len(GROUPS) > 1:
+    VARIANTS["+all"] = BASE + ALL_NEW
+SEEDS = (7, 11, 23)
 
 races, runners = T.load(T.DB)
 # 行は1回だけ作り、フォールドごとに使い回す (特徴量の列は全部入っている)
@@ -43,7 +53,7 @@ for name, feats in VARIANTS.items():
     MF = feats + F.MARKET_FEATURES
     parts = []
     for start, df_tr, df_va in folds:
-        m = T.fit(df_tr, "is_win", feats=MF, market_base=True)
+        m = T.fit_ensemble(df_tr, "is_win", MF, True, seeds=SEEDS)
         v = df_va.copy()
         v["p_raw"] = T.predict_market_base(m, v, MF)
         v["p_model"] = T.norm_in_race(v, "p_raw")
