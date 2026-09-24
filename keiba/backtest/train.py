@@ -230,8 +230,10 @@ def fit(train: pd.DataFrame, target: str, rounds: int | None = None, feats: list
     if market_base:
         params.update(learning_rate=0.02, num_leaves=15, min_data_in_leaf=200, lambda_l2=20.0)
 
+    cats = [c for c in F.CATEGORICAL if c in feats]   # 使う特徴量に含まれるカテゴリだけ
+
     def dataset(d, ref=None):
-        kw = dict(label=d[target], categorical_feature=F.CATEGORICAL)
+        kw = dict(label=d[target], categorical_feature=cats)
         if market_base:
             kw["init_score"] = market_logit(d)
         return lgb.Dataset(d[feats], reference=ref, free_raw_data=False, **kw)
