@@ -63,6 +63,7 @@ def main():
     ap.add_argument("--shrink", type=float, default=0.7,
                     help="モデルの確率を市場との幾何平均で縮める比率 (1.0=縮めない)。モデルは市場からのずれを過大に見積もるため")
     ap.add_argument("--out", default=OUT)
+    ap.add_argument("--min-bets-fit", type=int, default=MIN_BETS_FIT, help="方針を選ぶのに最低限必要な賭け数")
     args = ap.parse_args()
     thresholds = [float(x) for x in args.thresholds.split(",")]
     oos = pd.read_csv(OOS, dtype={"race_id": str})
@@ -152,7 +153,7 @@ def main():
             print(f"{kind} ev>={k:.1f}: fit {f['bets']:5d}点 的中{f['hit_rate']*100:5.1f}% 回収{f['roi']*100:6.1f}% | "
                   f"test {t['bets']:5d}点 的中{t['hit_rate']*100:5.1f}% 回収{t['roi']*100:6.1f}%")
             # 選定期間で回収率100%以上になる下限のうち、最も低い (=点数が多く、ぶれが小さい) ものを採る
-            if f["bets"] >= MIN_BETS_FIT and f["roi"] >= MIN_ROI.get(kind, MIN_ROI_DEFAULT) and best is None:
+            if f["bets"] >= args.min_bets_fit and f["roi"] >= MIN_ROI.get(kind, MIN_ROI_DEFAULT) and best is None:
                 best = (k, f)
         if best and kind in ADOPT_KINDS:
             policy[kind] = dict(threshold=best[0], pmin=PMIN[kind], fit=best[1])
