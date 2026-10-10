@@ -404,6 +404,20 @@ def race_bands(surface: str, heads: int, cls_rank: float) -> dict:
                 cls_band="新馬・未勝利" if cls_rank <= 0.5 else "1勝" if cls_rank <= 1.2 else "2勝・3勝" if cls_rank <= 2.5 else "OP・重賞")
 
 
+def skip_reason(race, bands: dict) -> str | None:
+    """統計モデルが当てにならない (検証で成績が悪い・学習の対象外・材料が足りない) レースなら、その理由。無ければ None。"""
+    if bands.get("surface") == "障":
+        return "障害レースは学習の対象外のため"
+    if bands.get("cls_band") == "新馬・未勝利":
+        return "新馬・未勝利戦は、検証で期待値買いの成績が悪かったため"
+    runners = [h for h in race.horses if "取消" not in (h.rest_note or "") and "除外" not in (h.rest_note or "")]
+    if runners and sum(1 for h in runners if h.past) / len(runners) < 0.5:
+        return "過去の走りが分かる馬が半数に満たず、材料が足りないため"
+    if len(runners) <= 5:
+        return "頭数が少なく、統計が当てにならないため"
+    return None
+
+
 def value_bets(win: dict[int, float], odds: dict[str, dict[str, float]] | None, policy: dict | None = None,
                bands: dict | None = None) -> dict[str, list[Ticket]]:
     """券種 -> 期待値の高い順の買い目 (上限 max_points)。オッズが無い券種は空。

@@ -304,6 +304,9 @@ if res and res["race_id"] == (rs.race_id if rs else None):
     bands = strategy.race_bands(race.surface, race.heads, F.class_rank(" ".join([race.cls, race.grade, race.name])))
     pol = value_policy or strategy.DEFAULT_VALUE_POLICY
     tickets: dict = {}
+    skip = strategy.skip_reason(race, bands)
+    if skip:
+        st.error(f"⚠️ このレースは見送り推奨: {skip}。買わないほうが無難です。")
     if race.surface == "障":
         st.warning("障害レースは学習の対象外 (芝・ダートのみで学習) のため、勝率と買い目は参考値です。")
 

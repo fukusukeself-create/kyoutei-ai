@@ -53,11 +53,12 @@ def main() -> None:
             if not sm or not odds.get("win"):
                 print(f"{m.venue}{r.rno}R オッズ未発売 (買い目は発売後に)")
                 continue
-            if race.surface == "障":
-                print(f"{m.venue}{r.rno}R 障害は学習対象外のため買い目なし")
+            bands = strategy.race_bands(race.surface, race.heads, F.class_rank(" ".join([race.cls, race.grade, race.name])))
+            skip = strategy.skip_reason(race, bands)
+            if skip:
+                print(f"  見送り推奨 {m.venue}{r.rno}R {r.start if hasattr(r, 'start') else ''} {race.surface}{race.distance}m {race.cls or race.grade}: {skip}")
                 continue
             n_races += 1
-            bands = strategy.race_bands(race.surface, race.heads, F.class_rank(" ".join([race.cls, race.grade, race.name])))
             names = {h.umaban: h.name for h in race.horses}
             buys = strategy.value_bets(sm["probs"], odds, pol, bands).get("単勝", [])
             head = f"{m.venue}{r.rno}R {r.start if hasattr(r, 'start') else ''} {race.surface}{race.distance}m {race.cls or race.grade}"
