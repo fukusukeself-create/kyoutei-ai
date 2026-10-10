@@ -6,3 +6,4 @@ backtest/*.log
 models/horses.json
 jravan/*.log
 backtest/data/
+!data/odds_log/
