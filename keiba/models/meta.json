@@ -129,140 +129,130 @@
   "weather"
  ],
  "metrics": {
-  "races": 5902,
-  "valid_period": [
-   "20250105",
-   "20261004"
-  ],
-  "logloss_model": 1.9181704048206671,
-  "logloss_market": 1.9243039229461787,
-  "logloss_pure": 2.05586309383976,
-  "top1_hit_pure": 0.29481531684174855,
-  "top1_roi_pure": 0.7842595730260928,
-  "logloss_blend": 1.9177640775680151,
-  "blend_w_market": 0.2,
-  "top1_hit_model": 0.3342934598441206,
-  "top1_hit_market": 0.3339545916638428,
-  "top1_hit_blend": 0.33344628939342597,
-  "top1_roi_model": 0.8014910199932227,
-  "top1_roi_market": 0.7907997289054558,
-  "tansho_model_bets": 290,
-  "tansho_model_roi": 1.1089655172413793,
-  "tansho_model_hit": 0.10344827586206896,
-  "tansho_pure_bets": 10778,
-  "tansho_pure_roi": 0.8699016515123399,
-  "tansho_pure_hit": 0.06503989608461681,
-  "tansho_blend_bets": 93,
-  "tansho_blend_roi": 1.196774193548387,
-  "tansho_blend_hit": 0.12903225806451613,
   "importance": [
    [
     "perf_cls",
-    96095.2
+    203164.8
    ],
    [
     "last_ninki",
-    44955.0
-   ],
-   [
-    "oik_rank_rel",
-    34958.5
+    93010.8
    ],
    [
     "last_fin",
-    17848.3
+    37916.5
    ],
    [
     "perf_w",
-    15100.5
+    33084.0
+   ],
+   [
+    "oik_rank_rel",
+    26369.6
    ],
    [
     "jockey_venue_win",
-    10611.2
+    25551.2
    ],
    [
     "heads",
-    10513.5
-   ],
-   [
-    "jockey_top3",
-    9798.7
-   ],
-   [
-    "same_surf_perf",
-    9262.3
-   ],
-   [
-    "jockey_win",
-    8783.7
-   ],
-   [
-    "age",
-    8268.7
+    17838.3
    ],
    [
     "last_cls_diff",
-    7920.7
+    17769.2
    ],
    [
-    "same_surf_tidx",
-    7803.3
+    "jockey_top3",
+    16007.3
    ],
    [
-    "last_agari_idx",
-    7397.7
-   ],
-   [
-    "oik_critic_win",
-    6552.1
+    "age",
+    14235.0
    ],
    [
     "body_weight",
-    6172.1
-   ],
-   [
-    "outrun",
-    5648.0
+    11598.7
    ],
    [
     "jockey_s_win",
-    5560.5
+    11357.3
    ],
    [
     "class_up",
-    5456.1
-   ],
-   [
-    "venue",
-    4915.6
-   ],
-   [
-    "last_tidx",
-    4743.1
-   ],
-   [
-    "trainer_top3",
-    4100.5
-   ],
-   [
-    "early_pos",
-    3966.3
-   ],
-   [
-    "sire_sb_top3",
-    3688.1
+    11112.3
    ],
    [
     "jockey_form_win",
-    3542.5
+    10893.7
+   ],
+   [
+    "same_surf_tidx",
+    10854.5
+   ],
+   [
+    "same_surf_perf",
+    10795.6
+   ],
+   [
+    "outrun",
+    9890.5
+   ],
+   [
+    "last_agari_idx",
+    8756.2
+   ],
+   [
+    "last_tidx",
+    7889.2
+   ],
+   [
+    "venue",
+    7517.9
+   ],
+   [
+    "day_done",
+    7295.1
+   ],
+   [
+    "cls_rank",
+    7207.8
+   ],
+   [
+    "dist_change",
+    7167.8
+   ],
+   [
+    "trainer_top3",
+    6832.5
+   ],
+   [
+    "jockey_win",
+    6817.1
    ]
-  ]
+  ],
+  "races": 5971,
+  "valid_period": [
+   "20250105",
+   "20261012"
+  ],
+  "logloss_model": 1.9155471467468788,
+  "logloss_market": 1.9238273948918685,
+  "top1_hit_model": 0.3359571261095294,
+  "top1_hit_market": 0.33411488862837047,
+  "top1_roi_model": 0.8054597219896165,
+  "top1_roi_market": 0.7911405124769719,
+  "tansho_model_bets": 375,
+  "tansho_model_hit": 0.096,
+  "tansho_model_roi": 0.9869333333333334,
+  "note": "JRA-VAN 2015年〜のデータで学習。検証は 2025年前半・後半・2026年 (fold1・2 は1シード、fold3 は3シード)"
  },
  "objective": "binary",
  "temperature": null,
  "data_period": [
-  "20210105",
-  "20261004"
+  "20150104",
+  "20261018"
  ],
- "races": 19218
+ "races": 39755,
+ "data_source": "JRA-VAN (2015〜2020) + netkeiba (2021〜)"
 }
