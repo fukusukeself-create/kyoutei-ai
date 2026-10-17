@@ -104,9 +104,15 @@ def export_spec(jv, spec: str, keep: set, alts: list[str], fromtime: str) -> dic
     n: dict = {}
     t0 = time.time()
     total = 0
+    nfile = 0
+    last = time.time()
+    print("読み込み中 (しばらく表示が変わらなくても動いています)…", flush=True)
     while True:
         r = jv.JVRead("", 110000, "")
         code, buff = (r[0], r[1]) if isinstance(r, tuple) else (r, "")
+        if time.time() - last >= 15:   # 15秒ごとに進み具合を出す
+            last = time.time()
+            print(f"  …ファイル {nfile}/{readcount} 件目・{total:,} 件 ({time.time()-t0:.0f}秒)", flush=True)
         if code > 0:
             rec = (buff or "").rstrip("\r\n")
             kind = rec[:2]
@@ -120,6 +126,7 @@ def export_spec(jv, spec: str, keep: set, alts: list[str], fromtime: str) -> dic
                 if total % 50000 == 0:
                     print(f"  {total:,} 件 ({time.time()-t0:.0f}秒) {n}", flush=True)
         elif code == -1:        # 次のファイルへ
+            nfile += 1
             continue
         elif code == 0:         # すべて読み終えた
             break
