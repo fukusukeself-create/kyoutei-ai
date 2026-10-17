@@ -254,5 +254,6 @@
   "20261018"
  ],
  "races": 39755,
- "data_source": "JRA-VAN (2015〜2020) + netkeiba (2021〜)"
+ "data_source": "JRA-VAN＋netkeiba",
+ "version": "【2026年10月18日版】JRA-VAN 全データ・LightGBM"
 }

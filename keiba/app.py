@@ -162,7 +162,8 @@ now = dt.datetime.now(JST)
 meta = (statmodel.load() or {}).get("meta")
 st.markdown("### 🏇 中央競馬 統計予想")
 if meta:
-    st.caption(f"統計モデル: {meta['races']:,}レース ({meta['data_period'][0][:4]}〜{meta['data_period'][1][:4]}年) から学習。AIは使わない。")
+    st.caption(f"統計モデル: {meta['races']:,}レース ({meta['data_period'][0][:4]}〜{meta['data_period'][1][:4]}年、"
+               f"{meta.get('data_source', 'netkeiba')}) から学習。{meta.get('version', '')}")
 else:
     st.caption("統計モデル未学習 (models/ なし)。馬柱の簡易レーティングで予想します。")
 

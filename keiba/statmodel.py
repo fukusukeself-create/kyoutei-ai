@@ -28,9 +28,22 @@ class _Ensemble:
         return np.mean([m.predict(X, raw_score=raw_score) for m in self.members], axis=0)
 
 
+def _stamp() -> tuple:
+    """モデルのファイルの更新時刻。変わっていたら読み直す (アプリを再起動しなくても新しいモデルになる)。"""
+    out = []
+    for f in ("meta.json", "win_mkt.txt", "stats.json", "profit.json", "workout_blend.json"):
+        try:
+            out.append(os.path.getmtime(os.path.join(MODEL_DIR, f)))
+        except OSError:
+            out.append(None)
+    return tuple(out)
+
+
 def load() -> Optional[dict]:
-    if "m" in _cache:
+    st = _stamp()
+    if "m" in _cache and _cache.get("stamp") == st:
         return _cache["m"]
+    _cache["stamp"] = st
     try:
         import lightgbm as lgb
         win = lgb.Booster(model_file=os.path.join(MODEL_DIR, "win.txt"))
