@@ -8,3 +8,4 @@ jravan/*.log
 backtest/data/
 !data/odds_log/
 data/jv_private/
+catboost_info/
