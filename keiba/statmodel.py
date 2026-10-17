@@ -279,11 +279,12 @@ def explain(f: dict, stats: dict) -> list[str]:
     return notes[:5]
 
 
-def horse_info(race: Race) -> dict[int, dict]:
+def horse_info(race: Race, extra_form: Optional[dict] = None) -> dict[int, dict]:
     """画面表示用: 馬番 -> {父系統, 母父系統, 騎手の直近60日, 調教師の直近60日}。"""
     import datetime as _dt
     m = load() or {}
-    lines, form = m.get("lines") or {}, m.get("form") or {}
+    jt = (m.get("stats") or {}).get("jockey") or {}
+    lines, form = m.get("lines") or {}, _merge_form(m.get("form") or {}, extra_form, jt)
     try:
         date_ord = _dt.date(int(race.date[:4]), int(race.date[4:6]), int(race.date[6:8])).toordinal()
     except (ValueError, TypeError):
@@ -291,7 +292,7 @@ def horse_info(race: Race) -> dict[int, dict]:
     last = max((d for hs in (form.get("j") or {}).values() for d, _ in hs), default=None)
     out = {}
     for h in race.horses:
-        jn, jw = F.form_asof([tuple(x) for x in (form.get("j") or {}).get(F.jockey_key(h.jockey), [])], date_ord)
+        jn, jw = F.form_asof([tuple(x) for x in (form.get("j") or {}).get(resolve_jockey(h.jockey, jt), [])], date_ord)
         tn, tw = F.form_asof([tuple(x) for x in (form.get("t") or {}).get(F.trainer_key(h.trainer), [])], date_ord)
         out[h.umaban] = dict(sire_line=(lines.get("sire") or {}).get(h.sire, ""), damsire_line=(lines.get("damsire") or {}).get(h.damsire, ""),
                              jockey_form=(jn, jw), trainer_form=(tn, tw))

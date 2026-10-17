@@ -519,7 +519,7 @@ if res and res["race_id"] == (rs.race_id if rs else None):
 
     # --- 全馬の勝率
     st.markdown('<div class="sec">全馬の勝率</div>', unsafe_allow_html=True)
-    info = statmodel.horse_info(race) if statmodel.available() else {}
+    info = statmodel.horse_info(race, evidence.extra_form((est.get("rides_prev") or []) + (est.get("rides_today") or []))) if statmodel.available() else {}
     rows, rows_d = [], []
     for h in ranked:
         hu = h.umaban
@@ -531,7 +531,7 @@ if res and res["race_id"] == (rs.race_id if rs else None):
         rows.append({"": mk, "馬番": hu, "馬名": h.name, "勝率": f"{p*100:.1f}%", "3着内": f"{plan.place_probs.get(hu, 0)*100:.0f}%",
                      "単勝": f"{o:.1f}" if o else "-", "期待値": f"{p*o:.2f}" if o else "-"})
         rows_d.append({"馬番": hu, "馬名": h.name, "調教": f"{h.oik_rank} {h.oik_critic}".strip() or "-", "騎手": h.jockey,
-                       "騎手60日": f"{jw}/{jn}" if jn else "-", "父系統": hi.get("sire_line") or "-",
+                       "騎手 直近60日の勝率": f"{jw/jn*100:.0f}% ({jn}戦{jw}勝)" if jn else "-", "父系統": hi.get("sire_line") or "-",
                        "母父系統": hi.get("damsire_line") or "-", "根拠": " / ".join(est["notes"].get(hu, []))})
     st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True,
                  column_config={"": st.column_config.TextColumn(width="small"), "馬番": st.column_config.NumberColumn(width="small")})
@@ -543,7 +543,7 @@ if res and res["race_id"] == (rs.race_id if rs else None):
         if pick:
             show_reasons(pick)
         if info.get("_form_asof"):
-            st.markdown(f'<div class="note">調教 = 追い切り評価 (A〜D と短評)。騎手60日 = 直近60日の 勝利/騎乗 ({info["_form_asof"]} まで)。系統は父・母父の父系。</div>',
+            st.markdown(f'<div class="note">調教 = 追い切り評価 (A〜D と短評)。騎手 直近60日の勝率 = 直近60日に勝った割合 ({info["_form_asof"]} まで。騎手全体の平均は約7%)。系統は父・母父の父系。</div>',
                         unsafe_allow_html=True)
     if rc["exotic"]:
         with st.expander("ワイド・馬単 (参考)"):
