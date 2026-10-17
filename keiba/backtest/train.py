@@ -301,12 +301,16 @@ def main():
     ap.add_argument("--folds", type=int, default=len(FOLDS))
     ap.add_argument("--valid-from", help="動作確認用: この日以降を1つの検証期間にする")
     ap.add_argument("--objective", choices=["binary", "rank"], default="binary")
+    ap.add_argument("--fold-start", help="この開始日の fold だけ計算する (例 20260101)")
+    ap.add_argument("--oos", default=OOS, help="学習外の予想の保存先")
     ap.add_argument("--no-final", action="store_true", help="検証 (fold) だけ行い、本番用の全期間学習はしない")
     ap.add_argument("--dump", help="各 fold の特徴量 (学習・検証) をこのフォルダに pickle で保存する (別の手法の比較用)")
     ap.add_argument("--workouts", action="store_true",
                     help="JRA-VAN の調教タイム (jravan/data) を市場補正モデルの特徴量に足す (検証用。本番の models には使わない)")
     args = ap.parse_args()
     folds = FOLDS[-args.folds:] if not args.valid_from else [(args.valid_from, "99999999")]
+    if args.fold_start:
+        folds = [f for f in FOLDS if f[0] == args.fold_start]
 
     races, runners = load(args.db)
     wk = None
@@ -371,7 +375,7 @@ def main():
         if ll < best_ll:
             best_w, best_ll = round(float(w), 2), ll
     valid["p_blend"] = blend(valid.p_model, valid.p_market, valid.race_id, best_w)
-    valid.drop(columns=["_b"]).to_csv(OOS if wk is None else OOS.replace(".csv", "_wk.csv"), index=False)
+    valid.drop(columns=["_b"]).to_csv(args.oos if wk is None else args.oos.replace(".csv", "_wk.csv"), index=False)
 
     top = valid.loc[valid.groupby("race_id").p_model.idxmax()]
     topp = valid.loc[valid.groupby("race_id").p_pure.idxmax()]
