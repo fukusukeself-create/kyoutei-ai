@@ -301,6 +301,7 @@ def main():
     ap.add_argument("--folds", type=int, default=len(FOLDS))
     ap.add_argument("--valid-from", help="動作確認用: この日以降を1つの検証期間にする")
     ap.add_argument("--objective", choices=["binary", "rank"], default="binary")
+    ap.add_argument("--no-final", action="store_true", help="検証 (fold) だけ行い、本番用の全期間学習はしない")
     ap.add_argument("--dump", help="各 fold の特徴量 (学習・検証) をこのフォルダに pickle で保存する (別の手法の比較用)")
     ap.add_argument("--workouts", action="store_true",
                     help="JRA-VAN の調教タイム (jravan/data) を市場補正モデルの特徴量に足す (検証用。本番の models には使わない)")
@@ -400,6 +401,8 @@ def main():
                       f"対数損失 {logloss(v, 'p_model'):.4f} (市場 {logloss(v, 'p_market'):.4f})", flush=True)
         return
 
+    if args.no_final:
+        return
     # 本番用: 全期間で学習
     stats_all = F.build_stats(_with_past(runners))
     career_all: dict = {}
