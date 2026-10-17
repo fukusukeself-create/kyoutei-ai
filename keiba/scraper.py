@@ -508,7 +508,7 @@ def fetch_all_odds(race_id: str) -> dict[str, dict[str, float]]:
 @dataclass
 class Result:
     race_id: str
-    order: list[dict]                       # [{finish, umaban, name, ninki, odds, time, margin}]
+    order: list[dict]                       # [{finish, umaban, name, ninki, odds, time, margin, jockey, trainer}]
     payouts: dict[str, list[tuple[str, int]]]  # 券種 -> [(組番 "1-5", 払戻円)]
 
 
@@ -526,7 +526,8 @@ def fetch_result(race_id: str) -> Optional[Result]:
             continue
         order.append(dict(finish=_to_int(tds[0]), waku=_to_int(tds[1]), umaban=_to_int(tds[2]), name=tds[3],
                           time=tds[7], margin=tds[8], ninki=_to_int(tds[9]), odds=_to_float(tds[10]),
-                          passing=tds[12] if len(tds) > 12 else ""))
+                          passing=tds[12] if len(tds) > 12 else "", jockey=tds[6],
+                          trainer=tds[13] if len(tds) > 13 else ""))
     if not order or order[0]["finish"] != 1:
         return None
     payouts: dict[str, list[tuple[str, int]]] = {}

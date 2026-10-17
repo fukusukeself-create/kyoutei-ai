@@ -116,9 +116,45 @@ def market_probs(win_odds: dict[str, float], umabans: list[int]) -> dict[int, fl
     return {u: v / z for u, v in raw.items()} if z else {}
 
 
-def predict(race: Race, win_odds: Optional[dict[str, float]] = None, day: Optional[dict] = None) -> Optional[dict]:
-    """戻り: {probs, model_probs, market_probs, top3_probs, features, blend_w}。モデルが無ければ None。
-    day: 当日その場で先に終わったレースの傾向 (features.day_bias の戻り)。"""
+_alias: dict = {}
+
+
+def resolve_jockey(name: str, table: dict) -> str:
+    """出馬表の騎手名を、学習データの名前にそろえる。JRA-VAN の略称は短い (ルメール → ルメー、Ｍデムーロ → Ｍデム)。
+    学習データに無ければ、名前の頭に一致する学習データの名前 (3文字以上・騎乗数が最多) を使う。"""
+    k = F.jockey_key(name)
+    if not k or k in table:
+        return k
+    if k not in _alias:
+        cands = [j for j in table if len(j) >= 3 and k.startswith(j)]
+        _alias[k] = max(cands, key=lambda j: (table[j][0] if isinstance(table[j], list) else 0, len(j))) if cands else k
+    return _alias[k]
+
+
+def _merge_form(form: dict, extra: Optional[dict], jt: Optional[dict] = None) -> dict:
+    """学習時の騎手・調教師の成績 (form.json) に、その後の結果 (前日など) を足す。学習と同じ「前日までの60日」にそろえる。"""
+    if not extra:
+        return form
+    out = {}
+    for k in ("j", "t"):
+        base = form.get(k) or {}
+        last = max((d for hs in base.values() for d, _ in hs), default=0)
+        add = extra.get(k) or {}
+        if k == "j" and jt:
+            add2: dict = {}
+            for n, v in add.items():
+                add2.setdefault(resolve_jockey(n, jt), []).extend(v)
+            add = {n: sorted(v) for n, v in add2.items()}
+        out[k] = {n: list(base.get(n, [])) + [tuple(x) for x in add.get(n, []) if x[0] > last] for n in set(base) | set(add)}
+    return out
+
+
+def predict(race: Race, win_odds: Optional[dict[str, float]] = None, day: Optional[dict] = None,
+            extra_form: Optional[dict] = None) -> Optional[dict]:
+    """戻り: {probs, model_probs, market_probs, top3_probs, features, blend_w, contrib}。モデルが無ければ None。
+    day: 当日その場で先に終わったレースの傾向 (features.day_bias の戻り)。
+    extra_form: 学習後の騎手・調教師の結果 {"j": {騎手: [(日付序数, 1着なら1)]}, "t": ...} (evidence.extra_form)。
+    contrib: 馬番 → {特徴量: 市場からの補正への寄与 (対数オッズ)} (LightGBM の SHAP 値)。"""
     m = load()
     if m is None:
         return None
@@ -131,8 +167,10 @@ def predict(race: Race, win_odds: Optional[dict[str, float]] = None, day: Option
         date_ord = _dt.date(int(race.date[:4]), int(race.date[4:6]), int(race.date[6:8])).toordinal()
     except (ValueError, TypeError):
         date_ord = _dt.date.today().toordinal()
-    lines, form = m.get("lines") or {}, m.get("form") or {}
+    jt = m["stats"].get("jockey") or {}
+    lines, form = m.get("lines") or {}, _merge_form(m.get("form") or {}, extra_form, jt)
     for r in runners:
+        r["jockey"] = resolve_jockey(r.get("jockey") or "", jt)
         r["career"] = F.career_asof(m.get("horses", {}).get(r.get("horse_id") or ""), date_ord)
         r["sire_line"] = (lines.get("sire") or {}).get(r.get("sire") or "", "")
         r["damsire_line"] = (lines.get("damsire") or {}).get(r.get("damsire") or "", "")
@@ -160,6 +198,7 @@ def predict(race: Race, win_odds: Optional[dict[str, float]] = None, day: Option
     top3_p = {u: min(1.0, float(p) / z3) for u, p in zip(umabans, raw3)}
     market = market_probs(win_odds or {}, umabans)
     engine = "統計モデル"
+    contrib = None
     probs = dict(model_p)
     w = 0.0
     if market and m.get("win_mkt") is not None and m["meta"].get("market_features"):
@@ -171,6 +210,10 @@ def predict(race: Race, win_odds: Optional[dict[str, float]] = None, day: Option
             logit = (pm / (1 - pm)).map(math.log).to_numpy()
             zs = logit + m["win_mkt"].predict(Xm, raw_score=True)
             rawm = 1.0 / (1.0 + __import__("numpy").exp(-zs))
+            import numpy as np
+            cols = list(Xm.columns)
+            sh = np.mean([b.predict(Xm, pred_contrib=True) for b in m["win_mkt"].members], axis=0)
+            contrib = {u: dict(zip(cols, map(float, row[:-1]))) for u, row in zip(umabans, sh)}
         else:
             rawm = m["win_mkt"].predict(Xm)
         zm = float(sum(rawm)) or 1.0
@@ -183,7 +226,7 @@ def predict(race: Race, win_odds: Optional[dict[str, float]] = None, day: Option
         engine = "統計+市場補正"
         w = 1.0 - k
     return dict(probs=probs, model_probs=model_p, market_probs=market, top3_probs=top3_p,
-                features={u: f for u, f in zip(umabans, feats)}, blend_w=w, engine=engine)
+                features={u: f for u, f in zip(umabans, feats)}, blend_w=w, engine=engine, contrib=contrib)
 
 
 def explain(f: dict, stats: dict) -> list[str]:

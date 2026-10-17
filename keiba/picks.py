@@ -4,6 +4,7 @@
     python picks.py 20261011     # 日付指定
     python picks.py 20261011 --all   # 買い目なしのレースも、勝率1位と期待値最大の馬を表示
     python picks.py 20261018 --plan  # レースごとのおすすめの賭け方を1行で (単勝が基本)
+    python picks.py 20261018 --plan --why   # おすすめの馬の根拠 (勝率の内訳・調教タイム・騎手の前日と今日) も
     python picks.py --soon 30        # 今日、発走30分以内のレースだけ (馬単・ワイドは直前のオッズで買う)
     python picks.py 20261011 --hit   # 的中重視: オッズを見ずに、本命の勝率が高いレースの本命を複勝で (モンテカルロで当たる数も)
 
@@ -21,6 +22,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 os.environ.setdefault("KEIBA_PREFER_CURL", "1")
 
+import evidence  # noqa: E402
 import features as F  # noqa: E402
 import montecarlo as mc  # noqa: E402
 import workouts  # noqa: E402
@@ -33,6 +35,10 @@ EVERY_PMIN = strategy.EVERY_PMIN   # 毎レース1頭買うときの候補 (stra
 HIT_BUY, HIT_CAND = strategy.HIT_BUY, 0.40   # 的中重視: 本命の勝率がこれ以上なら複勝で買う / 候補 (backtest/hit_first.py)
 
 
+def now_str() -> str:
+    return dt.datetime.now(JST).strftime("%Y%m%d")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("date", nargs="?", default=dt.datetime.now(JST).strftime("%Y%m%d"))
@@ -40,6 +46,7 @@ def main() -> None:
     ap.add_argument("--soon", type=int, help="発走まで この分数以内のレースだけ (例 --soon 30。買う直前の出し直し用)")
     ap.add_argument("--plan", action="store_true",
                     help="レースごとのおすすめの賭け方を1行で (単勝が基本: 単勝の期待値買い → 本命の複勝 → 参考のワイド・馬単 → 見送り)")
+    ap.add_argument("--why", action="store_true", help="--plan で、おすすめの馬の根拠も出す")
     ap.add_argument("--hit", action="store_true", help="的中重視: オッズを見ずに、本命の勝率が高いレースの本命を複勝で買う")
     a = ap.parse_args()
     if not statmodel.available():
@@ -54,6 +61,13 @@ def main() -> None:
     else:
         print(f"{a.date} 買い条件 (新馬・未勝利は除く): " + " / ".join(
             f"{k} 期待値{v['threshold']}以上" for k, v in ((pol or strategy.DEFAULT_VALUE_POLICY)["policy"]).items()))
+    # 前日の結果を騎手・調教師の直近60日に足す (学習と同じ扱い)。今日の結果は表示だけ
+    prev = evidence.prev_kaisai(a.date)
+    rides_prev = evidence.day_rides(prev) if prev else []
+    rides_today = evidence.day_rides(a.date) if a.date <= now_str() else []
+    xform = evidence.extra_form(rides_prev + rides_today)
+    if prev:
+        print(f"騎手・調教師の調子: {prev[4:6]}/{prev[6:]} の結果 {len(rides_prev)}騎乗を反映")
     n_races = n_buy = n_work = 0
     day_bets: list[dict] = []
     hit_ps: list[float] = []
@@ -74,10 +88,11 @@ def main() -> None:
                 except scraper.ScrapeError:
                     pass
                 odds = scraper.fetch_all_odds(r.race_id)
-                sm = statmodel.predict(race, odds.get("win"))
+                sm = statmodel.predict(race, odds.get("win"), extra_form=xform)
                 if sm:
                     adj = workouts.adjust(sm["probs"], {h.umaban: h.horse_id for h in race.horses}, race.date or a.date)
                     if adj:
+                        sm["model_probs_raw"] = dict(sm["probs"])
                         sm["probs"] = adj["probs"]
                         n_work += 1
             except Exception as e:  # 1レースの失敗で全体を止めない
@@ -107,6 +122,13 @@ def main() -> None:
                 if skip:
                     extra.append("注意: " + (skip[:-3] if skip.endswith('のため') else skip.removesuffix('ため')))
                 print(f"{head} | {rec} | {fav}" + (f" | {' / '.join(extra)}" if extra else ""))
+                if a.why and sm.get("features"):
+                    ev = evidence.reasons(x, race, sm, statmodel.load()["stats"], race_wk=evidence.race_workouts(race),
+                                          rides_today=rides_today, rides_prev=rides_prev)
+                    if sm.get("model_probs_raw"):
+                        ev["model"] = sm["model_probs_raw"].get(x, ev["model"])
+                    for line in evidence.text(ev, final=sm["probs"].get(x)):
+                        print("      " + line)
                 continue
             if a.hit and sm:
                 bands = strategy.race_bands(race.surface, race.heads, F.class_rank(" ".join([race.cls, race.grade, race.name])))

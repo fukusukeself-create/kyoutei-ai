@@ -13,6 +13,7 @@ import time
 import pandas as pd
 import streamlit as st
 
+import evidence
 import ledger
 import model as heuristic
 import scraper
@@ -97,6 +98,32 @@ def load_odds(race_id: str, _bucket: int):
     return scraper.fetch_all_odds(race_id)
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_prev_rides(date: str):
+    """直前の開催日の全騎乗結果 (騎手・調教師の直近60日に足す。学習と同じ扱い)。"""
+    try:
+        prev = evidence.prev_kaisai(date)
+        return prev, (evidence.day_rides(prev) if prev else [])
+    except Exception:
+        return None, []
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_today_rides(date: str, before: str):
+    """その日、before より前に発走したレースの騎乗結果 (騎手の今日の成績の表示用)。"""
+    if date > dt.datetime.now(JST).strftime("%Y%m%d"):
+        return []
+    try:
+        return evidence.day_rides(date, before)
+    except Exception:
+        return []
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_prev_form(date: str):
+    return evidence.extra_form(load_prev_rides(date)[1])
+
+
 @st.cache_data(ttl=600, show_spinner=False)
 def load_result(race_id: str):
     return scraper.fetch_result(race_id)
@@ -119,7 +146,7 @@ def plan_one(race_id: str, date: str, _bucket: int):
     import features as F
     race = load_race(race_id, date)
     wo = scraper.fetch_odds(race_id, "win")
-    sm = statmodel.predict(race, wo or None)
+    sm = statmodel.predict(race, wo or None, extra_form=load_prev_form(date))
     if not sm:
         return None
     bands = strategy.race_bands(race.surface, race.heads, F.class_rank(" ".join([race.cls, race.grade, race.name])))
@@ -168,11 +195,15 @@ def run_prediction(race, odds, style):
         day = load_day_bias(race.date, race.venue, race.rno)
     except Exception:
         day = None
-    sm = statmodel.predict(race, odds.get("win"), day)
+    prev_date, rides_prev = load_prev_rides(race.date)
+    rides_today = load_today_rides(race.date, race.start or "99:99")
+    sm = statmodel.predict(race, odds.get("win"), day, extra_form=evidence.extra_form(rides_prev + rides_today))
     if sm:
+        sm["day"] = day
         est = dict(probs=sm["probs"], model_probs=sm["model_probs"], market_probs=sm["market_probs"],
                    notes={u: statmodel.explain(f, statmodel.load()["stats"]) for u, f in sm["features"].items()},
-                   engine=sm.get("engine", "統計モデル"), blend_w=sm["blend_w"], top3=sm["top3_probs"])
+                   engine=sm.get("engine", "統計モデル"), blend_w=sm["blend_w"], top3=sm["top3_probs"],
+                   sm=sm, rides_prev=rides_prev, rides_today=rides_today, prev_date=prev_date)
     else:
         e = heuristic.estimate(race, odds.get("win"))
         est = dict(probs=e["probs"], model_probs=e["model_probs"], market_probs=e["market_probs"],
@@ -400,6 +431,28 @@ if res and res["race_id"] == (rs.race_id if rs else None):
     </div>""", unsafe_allow_html=True)
     if skip:
         st.warning(f"注意: {skip}。予想の精度が低いレースなので、買うなら少額で。")
+
+    def show_reasons(hu: int) -> None:
+        sm_ = est.get("sm")
+        if not sm_ or hu not in (sm_.get("features") or {}):
+            st.caption("根拠は統計モデルのときだけ出ます。")
+            return
+        try:
+            wk = evidence.race_workouts(race)
+        except Exception:
+            wk = {}
+        r = evidence.reasons(hu, race, sm_, statmodel.load()["stats"], race_wk=wk,
+                             rides_today=est.get("rides_today"), rides_prev=est.get("rides_prev") if est.get("prev_date") else None)
+        lines = evidence.text(r, final=plan.win_probs.get(hu))
+        st.markdown("\n".join(f"- {x}" for x in lines))
+
+    with st.expander(f"🔍 {u}番 {names.get(u, '')} を選んだ根拠", expanded=True):
+        show_reasons(u)
+        st.markdown('<div class="note">統計モデルは「単勝オッズから見た勝率」を土台に、近走・騎手・血統などで上げ下げする。'
+                    '【分野 プラス×1.08】は、その分野で他の馬より勝率を約1.08倍に上げたという意味 (LightGBM の寄与度)。'
+                    '騎手の前日・今日の成績は表示だけ (2026年の検証で予想を良くしなかったため勝率には足さない。前日までの結果は直近60日の成績に反映)。'
+                    + ('' if evidence.race_workouts(race) else ' JRA-VAN の調教タイムは規約で公開できないため、アプリには出ない (朝の報告に載せます)。')
+                    + '</div>', unsafe_allow_html=True)
     tickets = {"単勝": [strategy.Ticket("単勝", (u,), rc["prob"], rc["odds"])]}
     if rc["fuku"]:
         tickets["複勝"] = [strategy.Ticket("複勝", (rc["fuku"],), plan.place_probs.get(rc["fuku"], 0),
@@ -440,6 +493,10 @@ if res and res["race_id"] == (rs.race_id if rs else None):
     st.markdown('<div class="note">期待値 = 勝率 × 単勝オッズ。1.0 を超えると、市場が過小評価していると判断した馬。</div>', unsafe_allow_html=True)
     with st.expander("詳しい情報 (調教・騎手・血統・根拠)"):
         st.dataframe(pd.DataFrame(rows_d), hide_index=True, use_container_width=True)
+        pick = st.selectbox("この馬の根拠を見る", [h.umaban for h in ranked],
+                            format_func=lambda x: f"{x}番 {names.get(x, '')} (勝率 {plan.win_probs.get(x, 0)*100:.0f}%)")
+        if pick:
+            show_reasons(pick)
         if info.get("_form_asof"):
             st.markdown(f'<div class="note">調教 = 追い切り評価 (A〜D と短評)。騎手60日 = 直近60日の 勝利/騎乗 ({info["_form_asof"]} まで)。系統は父・母父の父系。</div>',
                         unsafe_allow_html=True)
