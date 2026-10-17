@@ -30,7 +30,7 @@ _cache: dict = {}
 def zscores(w: pd.DataFrame) -> pd.DataFrame:
     """同じ日・同じトレセン・同じコース (坂路/ウッド) の中で、4F と ラスト1F を標準化する (速いほど +)。"""
     g = w.groupby(["kind", "center", "wdate"])
-    for c in ("f4", "l1"):
+    for c in [c for c in ("f4", "l1", "f3") if c in w.columns]:
         sd = g[c].transform("std").replace(0, np.nan)
         w[c + "_z"] = -(w[c] - g[c].transform("mean")) / sd
     return w
@@ -54,6 +54,32 @@ def race_features(runners: pd.DataFrame, w: pd.DataFrame) -> pd.DataFrame:
         r[c] = r[c].fillna(0.0).clip(-4, 4)
     r["w_n"] = r["w_n"].fillna(0).clip(0, 8)
     return r.drop(columns=["_d"])
+
+
+EXT_FEATURES = ["w_best4", "w_best1", "w_last4", "w_last1", "w_n", "w_missing", "w_best3", "w_last3", "w_days", "w_lastW", "w_n30"]
+
+
+def race_features_ext(runners: pd.DataFrame, w: pd.DataFrame) -> pd.DataFrame:
+    """学習用の拡張版: race_features に 3F・最後の調教からの日数・最後がウッドか・30日の本数 を足す。"""
+    r = race_features(runners, w)
+    r["_d"] = pd.to_datetime(r["date"].astype(str))
+    w = w.copy()
+    w["_w"] = pd.to_datetime(w["wdate"].astype(str))
+    m = r[["horse_id", "_d"]].drop_duplicates().merge(w, on="horse_id")
+    m30 = m[(m._w < m._d) & (m._w >= m._d - pd.Timedelta(days=30))]
+    m14 = m30[m30._w >= m30._d - pd.Timedelta(days=WINDOW_DAYS)]
+    a30 = m30.groupby(["horse_id", "_d"]).agg(w_n30=("f4", "size"), _lastw=("_w", "max"))
+    a14 = m14.groupby(["horse_id", "_d"]).agg(w_best3=("f3_z", "max"))
+    last = m14.sort_values("_w").groupby(["horse_id", "_d"]).tail(1).set_index(["horse_id", "_d"])
+    last = pd.DataFrame({"w_last3": last["f3_z"], "w_lastW": (last["kind"] == "W").astype(float)})
+    for t in (a30, a14, last):
+        r = r.merge(t, left_on=["horse_id", "_d"], right_index=True, how="left")
+    r["w_days"] = ((r["_d"] - r["_lastw"]).dt.days).fillna(31).clip(0, 31)
+    r["w_n30"] = r["w_n30"].fillna(0).clip(0, 15)
+    for c in ("w_best3", "w_last3"):
+        r[c] = r[c].fillna(0.0).clip(-4, 4)
+    r["w_lastW"] = r["w_lastW"].fillna(0.0)
+    return r.drop(columns=["_d", "_lastw"])
 
 
 def blend_probs(p: np.ndarray, feats: np.ndarray, weights: dict) -> np.ndarray:

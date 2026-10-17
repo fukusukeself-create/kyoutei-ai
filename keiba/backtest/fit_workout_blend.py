@@ -36,14 +36,14 @@ def read_jv_workouts(since: str) -> pd.DataFrame:
     for f in sorted(glob.glob(os.path.join(ROOT, "jravan", "data", "SLOP_HC_*.txt"))):
         for l in open(f, encoding="utf-8"):
             if len(l.rstrip()) >= 58 and l[12:20] >= since:
-                rows.append((l[24:34], l[12:20], int(l[11]), "H", t(l[34:38]), t(l[55:58])))
+                rows.append((l[24:34], l[12:20], int(l[11]), "H", t(l[34:38]), t(l[55:58]), t(l[41:45])))
     for f in sorted(glob.glob(os.path.join(ROOT, "jravan", "data", "WOOD_WC_*.txt"))):
         for l in open(f, encoding="utf-8"):
             l = l.rstrip()
             if len(l) >= 60 and l[12:20] >= since:
                 tail = l[-24:]
-                rows.append((l[24:34], l[12:20], int(l[11]), "W", t(tail[0:4]), t(tail[21:24])))
-    w = pd.DataFrame(rows, columns=["horse_id", "wdate", "center", "kind", "f4", "l1"]).dropna(subset=["f4"])
+                rows.append((l[24:34], l[12:20], int(l[11]), "W", t(tail[0:4]), t(tail[21:24]), t(tail[7:11])))
+    w = pd.DataFrame(rows, columns=["horse_id", "wdate", "center", "kind", "f4", "l1", "f3"]).dropna(subset=["f4"])
     return W.zscores(w)
 
 

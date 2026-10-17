@@ -301,10 +301,21 @@ def main():
     ap.add_argument("--folds", type=int, default=len(FOLDS))
     ap.add_argument("--valid-from", help="動作確認用: この日以降を1つの検証期間にする")
     ap.add_argument("--objective", choices=["binary", "rank"], default="binary")
+    ap.add_argument("--workouts", action="store_true",
+                    help="JRA-VAN の調教タイム (jravan/data) を市場補正モデルの特徴量に足す (検証用。本番の models には使わない)")
     args = ap.parse_args()
     folds = FOLDS[-args.folds:] if not args.valid_from else [(args.valid_from, "99999999")]
 
     races, runners = load(args.db)
+    wk = None
+    if args.workouts:
+        sys.path.insert(0, HERE)
+        import workouts as W
+        from fit_workout_blend import read_jv_workouts
+        w = read_jv_workouts("20201201")
+        wk = W.race_features_ext(runners[["race_id", "umaban", "horse_id", "date"]], w)
+        wk = wk.rename(columns={"umaban": "umaban_id"})[["race_id", "umaban_id"] + W.EXT_FEATURES]
+        print(f"調教の特徴: {len(wk):,}頭分 (調教あり {1 - wk.w_missing.mean():.3f})", flush=True)
     print(f"races {len(races)} runners {len(runners)} {races.date.min()}..{races.date.max()}", flush=True)
 
     oos = []
@@ -329,6 +340,10 @@ def main():
             df_va["p_raw"] = win_m.predict(df_va[F.FEATURES])
             df_va["p_pure"] = norm_in_race(df_va, "p_raw")
         MF = F.FEATURES + F.MARKET_FEATURES
+        if wk is not None:
+            df_tr = df_tr.merge(wk, on=["race_id", "umaban_id"], how="left")
+            df_va = df_va.merge(wk, on=["race_id", "umaban_id"], how="left")
+            MF = MF + W.EXT_FEATURES
         mkt_m = fit_ensemble(df_tr, "is_win", MF, True)
         df_va["p_raw_mkt"] = predict_market_base(mkt_m, df_va, MF)
         df_va["p_model"] = norm_in_race(df_va, "p_raw_mkt")     # 以降の検証・賭け方比較は市場補正モデルで
@@ -350,7 +365,7 @@ def main():
         if ll < best_ll:
             best_w, best_ll = round(float(w), 2), ll
     valid["p_blend"] = blend(valid.p_model, valid.p_market, valid.race_id, best_w)
-    valid.drop(columns=["_b"]).to_csv(OOS, index=False)
+    valid.drop(columns=["_b"]).to_csv(OOS if wk is None else OOS.replace(".csv", "_wk.csv"), index=False)
 
     top = valid.loc[valid.groupby("race_id").p_model.idxmax()]
     topp = valid.loc[valid.groupby("race_id").p_pure.idxmax()]
@@ -371,6 +386,14 @@ def main():
         metrics[f"tansho_{name}_roi"] = float((pick.is_win * pick.odds).mean()) if len(pick) else None
         metrics[f"tansho_{name}_hit"] = float(pick.is_win.mean()) if len(pick) else None
     print(json.dumps(metrics, ensure_ascii=False, indent=1), flush=True)
+    if wk is not None:   # 検証だけ。本番の models は作り直さない
+        for y in ("2025", "2026"):
+            v = valid[valid.date.astype(str).str[:4] == y]
+            for th in (1.0, 1.1):
+                pick = v[(v.p_model * v.odds >= th) & (v.p_model >= 0.05)]
+                print(f"{y} 単勝 期待値{th}以上: {len(pick)}点 回収 {(pick.is_win * pick.odds).mean()*100:.1f}%  "
+                      f"対数損失 {logloss(v, 'p_model'):.4f} (市場 {logloss(v, 'p_market'):.4f})", flush=True)
+        return
 
     # 本番用: 全期間で学習
     stats_all = F.build_stats(_with_past(runners))
