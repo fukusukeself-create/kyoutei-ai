@@ -4,3 +4,4 @@ beautifulsoup4>=4.12
 pandas>=2.0
 numpy>=1.26
 lightgbm>=4.0
+streamlit-js-eval==1.0.0

@@ -13,9 +13,11 @@ import time
 import pandas as pd
 import streamlit as st
 
+import json
+
 import evidence
-import ledger
 import model as heuristic
+import mybets
 import scraper
 import statmodel
 import strategy
@@ -235,6 +237,28 @@ with st.expander("この予想の見方"):
 """)
 
 ss = st.session_state
+
+# ---------------------------------------------------------------- my収支の保存 (ブラウザの localStorage。サーバーには置かない)
+MYBETS_KEY = "keiba_mybets_v1"
+try:
+    from streamlit_js_eval import streamlit_js_eval
+except ImportError:
+    streamlit_js_eval = None
+if "mybets" not in ss:
+    if streamlit_js_eval is None:
+        ss.mybets = []   # 部品が無い環境では、この画面を開いている間だけ
+    else:
+        raw = streamlit_js_eval(js_expressions=f"localStorage.getItem('{MYBETS_KEY}') || '[]'", key="mybets_load")
+        if raw is not None:
+            try:
+                ss.mybets = json.loads(raw)
+            except (TypeError, ValueError):
+                ss.mybets = []
+
+
+def mybets_changed() -> None:
+    """記録を変えたら呼ぶ。画面の最後でブラウザに書き込む。"""
+    ss.mybets_ver = ss.get("mybets_ver", 0) + 1
 ss.setdefault("race_date", now.date())
 ss.setdefault("auto_run", False)
 ss.setdefault("result", None)
@@ -328,7 +352,7 @@ if is_today and meetings:
     with st.container(key="planlist_live"):
         live_picks()
 
-tab_plan, tab_grid, tab_time = st.tabs(["📋 今日の買い目", "🏁 開催一覧", "⏰ 発走順"])
+tab_plan, tab_grid, tab_time, tab_my = st.tabs(["📋 今日の買い目", "🏁 開催一覧", "⏰ 発走順", "💴 my収支"])
 with tab_plan:
     st.markdown('<div class="note">全レースの「単勝のこの1頭」。🟢◎ = 勝負 (期待値買い) / 🔵○ = いつもの1頭 / ⚠ = 精度が低いレース。'
                 '押すと、そのレースの詳しい画面 (下) に移る。</div>', unsafe_allow_html=True)
@@ -504,18 +528,43 @@ if res and res["race_id"] == (rs.race_id if rs else None):
                                           strategy._odds_of(odds.get("place", {}), (rc["fuku"],)))]
     plan.tickets = tickets
 
-    b1, b2 = st.columns(2, wrap=False)
-    if b1.button("🔄 オッズ更新", use_container_width=True):
+    if st.button("🔄 オッズ更新", use_container_width=True):
         load_odds.clear()
         odds = load_odds(race.race_id, int(time.time()))
         est, plan = run_prediction(race, odds, style)
         res.update(odds=odds, est=est, plan=plan, at=dt.datetime.now(JST).strftime("%H:%M")); st.rerun()
-    if res.get("saved"):
-        b2.success(f"台帳に保存済み #{res['saved']}")
-    elif b2.button("📒 台帳に保存", use_container_width=True):
-        res["saved"] = ledger.save_prediction(race, plan, f"{est['engine']}/{rc['mark']}"); st.rerun()
     st.markdown('<div class="note">オッズは発走直前まで動く。買う前 (発走10〜30分前) に「オッズ更新」を押して、買い目が変わらないか確かめる。</div>',
                 unsafe_allow_html=True)
+
+    # --- 即PAT で買う → my収支に記録
+    with st.expander("💴 即PATで買う・my収支に記録", expanded=True):
+        k1, k2 = st.columns([1, 1], wrap=False)
+        kind = k1.selectbox("式別", mybets.KINDS, index=0, key=f"bk_{race.race_id}")
+        stake = k2.number_input("金額 (円)", min_value=100, step=100, value=100, key=f"bs_{race.race_id}")
+        default = str(u) if kind in ("単勝", "複勝") else ""
+        if kind == "複勝" and rc["fuku"]:
+            default = str(rc["fuku"])
+        combo_txt = st.text_input(f"馬番 ({mybets.NEEDS[kind]}頭。2頭以上は 3-8 のように)", value=default, key=f"bc_{race.race_id}_{kind}")
+        combo = [int(x) for x in combo_txt.replace("→", "-").replace(" ", "-").split("-") if x.strip().isdigit()]
+        ok = len(combo) == mybets.NEEDS[kind] and all(1 <= c <= 18 for c in combo) and len(set(combo)) == len(combo)
+        okey = {"単勝": "win", "複勝": "place"}.get(kind)
+        o_now = strategy._odds_of(odds.get(okey, {}), tuple(combo)) if okey and ok else None
+        draft = mybets.new_bet(race.race_id, race.date, race.venue, race.rno, race.name, kind, combo, stake,
+                               odds=o_now, prob=plan.win_probs.get(combo[0]) if kind == "単勝" and ok else None,
+                               mark=rc["mark"] if (kind == "単勝" and ok and combo[0] == u) else "")
+        if ok:
+            st.markdown(f'<div class="tk good"><span class="cmb">{mybets.ipat_memo(draft)}</span>'
+                        f'<span class="meta">{f"いま {o_now}倍" if o_now else ""}</span></div>', unsafe_allow_html=True)
+        p1, p2 = st.columns(2, wrap=False)
+        p1.link_button("即PATを開く ↗", "https://www.ipat.jra.go.jp/", use_container_width=True)
+        loaded = "mybets" in ss
+        if p2.button("✅ 買った (記録)", use_container_width=True, disabled=not (ok and loaded), type="primary"):
+            ss.mybets.append(draft)
+            mybets_changed()
+            st.toast(f"my収支に記録: {mybets.ipat_memo(draft)}")
+        st.markdown('<div class="note">即PAT は外部のアプリから馬券を買う仕組みが公開されていないため、買うのは即PATの画面で '
+                    '(通常投票 → 競馬場 → レース → 式別 → 馬番 → 金額)。上の緑の行がその入力の順番。買ったら「買った」で記録すると、'
+                    'レース後に払戻を自動で照合して「💴 my収支」タブで集計する。</div>', unsafe_allow_html=True)
 
     # --- 全馬の勝率
     st.markdown('<div class="sec">全馬の勝率</div>', unsafe_allow_html=True)
@@ -595,38 +644,103 @@ if res and res["race_id"] == (rs.race_id if rs else None):
                              if k in ("単勝", "馬連", "ワイド", "三連複"))
             st.markdown(f'<div class="note">{pay}</div>', unsafe_allow_html=True)
 
-# ---------------------------------------------------------------- 成績
-st.divider()
-with st.expander("📒 成績・答え合わせ (台帳)"):
-    if st.button("✅ 結果を取り込んで答え合わせ", use_container_width=True):
-        with st.spinner("結果を取得中…"):
-            n = ledger.settle(scraper.fetch_result)
-        st.success(f"{n}件を確定しました。")
-    sm = ledger.summary()
-    a, b = st.columns(2, wrap=False)
-    a.metric("確定レース", f"{sm['races']}")
-    b.metric("レース的中率", f"{sm['hit_rate']*100:.0f}%")
-    c, d = st.columns(2, wrap=False)
-    c.metric("回収率", f"{sm['roi']*100:.0f}%")
-    d.metric("収支 (1点100円)", f"{sm['returned']-sm['invested']:+,}円")
-    if sm["pending"]:
-        st.caption(f"未確定 {sm['pending']}件")
-    if sm["by_kind"]:
-        kd = [{"券種": k, "点数": v["points"], "的中": v["hits"], "的中率": f"{v['hits']/v['points']*100:.0f}%",
-               "回収率": f"{v['ret']/v['inv']*100:.0f}%" if v["inv"] else "-"} for k, v in sm["by_kind"].items()]
-        st.dataframe(pd.DataFrame(kd), hide_index=True, use_container_width=True)
-    recs = ledger.recent(30)
-    if not recs:
-        st.caption("まだ予想を保存していません。「台帳に保存」で記録できます。")
-    for p in recs:
-        status = ("的中 🎯" if p["hit"] else "不的中") if p["settled"] else "未確定"
-        pl = f" {p['returned']-p['invested']:+,}円" if p["settled"] else ""
-        st.markdown(f"**{p['race_date'][4:6]}/{p['race_date'][6:]} {p['venue']}{p['rno']}R {p['race_name']}** [{p['style']}] {status}{pl}")
-        st.caption("　".join(f"{t['kind']}{'-'.join(map(str, t['combo']))}" + (f"→{t['payout']:,}円" if t.get("payout") else "")
-                             for t in p["tickets"]))
-    if recs:
-        st.download_button("CSVで書き出す", ledger.export_csv().encode("utf-8-sig"), file_name="keiba_ledger.csv",
-                           mime="text/csv", use_container_width=True)
+# ---------------------------------------------------------------- my収支
+def _yen(v: int) -> str:
+    return f"{v:+,}円" if v else "0円"
+
+
+def _agg_table(d: dict, label: str) -> pd.DataFrame:
+    return pd.DataFrame([{label: k, "点数": v["n"], "的中": v["hits"], "投資": f"{v['invested']:,}円",
+                          "払戻": f"{v['returned']:,}円", "収支": _yen(v["profit"]), "回収率": f"{v['roi']*100:.0f}%"}
+                         for k, v in d.items()])
+
+
+with tab_my:
+    if "mybets" not in ss:
+        st.caption("記録を読み込み中…")
+    else:
+        bets = ss.mybets
+        pend = [b for b in bets if not b.get("settled") and b["date"] <= now.strftime("%Y%m%d")]
+        if pend:
+            n = mybets.settle(pend, load_result)
+            if n:
+                mybets_changed()
+        sm_ = mybets.summary(bets)
+        t_ = sm_["total"]
+        a, b = st.columns(2, wrap=False)
+        a.metric("収支", _yen(t_["profit"]))
+        b.metric("回収率", f"{t_['roi']*100:.0f}%" if t_["invested"] else "-")
+        c, d = st.columns(2, wrap=False)
+        c.metric("投資", f"{t_['invested']:,}円")
+        d.metric("払戻", f"{t_['returned']:,}円")
+        if t_["n"]:
+            st.caption(f"的中 {t_['hits']}/{t_['n']}点 (的中率 {t_['hit_rate']*100:.0f}%)")
+        if sm_["pending"]:
+            st.caption(f"結果待ち {sm_['pending']}点 ({sm_['pending_stake']:,}円)。レースが確定すると自動で照合します。")
+        if not bets:
+            st.info("まだ記録がありません。レース画面の「💴 即PATで買う・my収支に記録」で「買った」を押すと、ここに貯まります。")
+        if sm_["by_day"]:
+            st.markdown('<div class="sec">日別</div>', unsafe_allow_html=True)
+            st.dataframe(_agg_table(sm_["by_day"], "日"), hide_index=True, use_container_width=True)
+            with st.expander("月別・券種別・印別"):
+                st.dataframe(_agg_table(sm_["by_month"], "月"), hide_index=True, use_container_width=True)
+                st.dataframe(_agg_table(sm_["by_kind"], "券種"), hide_index=True, use_container_width=True)
+                st.dataframe(_agg_table(sm_["by_mark"], "選び方"), hide_index=True, use_container_width=True)
+                st.markdown('<div class="note">選び方 = アプリの◎ (勝負)・○ (いつもの1頭) の単勝をそのまま買ったか、自分で選んだか。</div>',
+                            unsafe_allow_html=True)
+        if bets:
+            st.markdown('<div class="sec">買った馬券</div>', unsafe_allow_html=True)
+            for bt in sorted(bets, key=lambda x: (x["date"], x["id"]), reverse=True)[:60]:
+                if bt.get("settled"):
+                    stt = f"🎯 {bt['payout']:,}円" if bt["payout"] else "はずれ"
+                    stt += f" (着順 {bt['result']})" if bt.get("result") else ""
+                else:
+                    stt = "結果待ち"
+                c1, c2 = st.columns([5, 1], wrap=False)
+                c1.markdown(f"**{bt['date'][4:6]}/{bt['date'][6:]}** {mybets.ipat_memo(bt)}  \n"
+                            f"<span class='note'>{bt.get('mark') or ''} {bt.get('race_name') or ''}"
+                            f"{' ・買った時 ' + str(bt['odds']) + '倍' if bt.get('odds') else ''} ・ {stt}</span>", unsafe_allow_html=True)
+                if c2.button("🗑", key=f"del_{bt['id']}", help="この記録を消す"):
+                    ss.mybets = [x for x in bets if x["id"] != bt["id"]]
+                    mybets_changed()
+                    st.rerun()
+        with st.expander("アプリ以外で買った馬券を記録する"):
+            md = st.date_input("日付", value=race_date, key="my_date")
+            mds = md.strftime("%Y%m%d")
+            try:
+                mms = load_meetings(mds)
+            except scraper.ScrapeError:
+                mms = []
+            if not mms:
+                st.caption("この日は開催がありません。")
+            else:
+                f1, f2 = st.columns(2, wrap=False)
+                mv = f1.selectbox("競馬場", [m.venue for m in mms], key="my_venue")
+                mm = next(m for m in mms if m.venue == mv)
+                mr = f2.selectbox("レース", [r.rno for r in mm.races], format_func=lambda x: f"{x}R", key="my_rno")
+                f3, f4 = st.columns(2, wrap=False)
+                mk = f3.selectbox("式別", mybets.KINDS, key="my_kind")
+                mst = f4.number_input("金額 (円)", min_value=100, step=100, value=100, key="my_stake")
+                mc_ = st.text_input(f"馬番 ({mybets.NEEDS[mk]}頭。例 3-8)", key="my_combo")
+                cmb = [int(x) for x in mc_.replace("→", "-").replace(" ", "-").split("-") if x.strip().isdigit()]
+                rr = next(r for r in mm.races if r.rno == mr)
+                okm = len(cmb) == mybets.NEEDS[mk] and len(set(cmb)) == len(cmb)
+                if st.button("記録する", disabled=not okm, use_container_width=True):
+                    ss.mybets.append(mybets.new_bet(rr.race_id, mds, mv, mr, rr.name, mk, cmb, mst))
+                    mybets_changed()
+                    st.toast("記録しました")
+                    st.rerun()
+        with st.expander("控え (CSV) の書き出し・読み込み"):
+            st.download_button("CSVで書き出す", mybets.to_csv(bets).encode("utf-8-sig"), file_name="my_shushi.csv",
+                               mime="text/csv", use_container_width=True, disabled=not bets)
+            up = st.file_uploader("CSVを読み込む (同じ記録は重ねない)", type=["csv"])
+            if up is not None and st.button("読み込む", use_container_width=True):
+                ss.mybets = mybets.merge(bets, mybets.from_csv(up.getvalue().decode("utf-8-sig", errors="ignore")))
+                mybets_changed()
+                st.rerun()
+            st.markdown('<div class="note">記録はこのスマホ (ブラウザ) の中だけに保存され、他の人やサーバーには残らない。'
+                        'ブラウザのデータを消したり、別のスマホで開くと見えないので、ときどきCSVで控えを取っておく。</div>',
+                        unsafe_allow_html=True)
 
 if meta and (meta.get("metrics") or {}).get("valid_period"):
     mt = meta["metrics"]
@@ -661,3 +775,9 @@ if meta and (meta.get("metrics") or {}).get("valid_period"):
                                         "回収率": f"{r['test']['roi']*100:.0f}%"} for r in g]), hide_index=True, use_container_width=True)
 
 st.caption("データ: netkeiba。予想は参考情報であり、購入は自己責任で。20歳未満の馬券購入は法律で禁止されています。")
+
+# my収支の書き込み (変えたときだけ)
+if streamlit_js_eval is not None and "mybets" in ss and ss.get("mybets_ver", 0) != ss.get("mybets_saved_ver", 0):
+    streamlit_js_eval(js_expressions=f"localStorage.setItem('{MYBETS_KEY}', {json.dumps(json.dumps(ss.mybets, ensure_ascii=False))}); 1",
+                      key=f"mybets_save_{ss.mybets_ver}")
+    ss.mybets_saved_ver = ss.mybets_ver
