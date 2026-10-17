@@ -21,6 +21,7 @@ os.environ.setdefault("KEIBA_PREFER_CURL", "1")
 
 import features as F  # noqa: E402
 import montecarlo as mc  # noqa: E402
+import workouts  # noqa: E402
 import scraper  # noqa: E402
 import statmodel  # noqa: E402
 import strategy  # noqa: E402
@@ -43,7 +44,7 @@ def main() -> None:
         print(f"{a.date} 的中重視: 本命の勝率 {HIT_BUY*100:.0f}%以上 → 複勝で買い / {HIT_CAND*100:.0f}%以上 → 候補 (オッズは見ない)")
     else:
         print(f"{a.date} 単勝 買い条件: 期待値 {rule.get('threshold', 1.3)} 以上 / 勝率 {rule.get('pmin', 0.05)*100:.0f}% 以上 / 新馬・未勝利は除く")
-    n_races = n_buy = 0
+    n_races = n_buy = n_work = 0
     day_bets: list[dict] = []
     hit_ps: list[float] = []
     for m in scraper.fetch_meetings(a.date):
@@ -56,6 +57,11 @@ def main() -> None:
                     pass
                 odds = scraper.fetch_all_odds(r.race_id)
                 sm = statmodel.predict(race, odds.get("win"))
+                if sm:
+                    adj = workouts.adjust(sm["probs"], {h.umaban: h.horse_id for h in race.horses}, race.date or a.date)
+                    if adj:
+                        sm["probs"] = adj["probs"]
+                        n_work += 1
             except Exception as e:  # 1レースの失敗で全体を止めない
                 print(f"{m.venue}{r.rno}R 取得失敗: {e}")
                 continue
@@ -100,6 +106,10 @@ def main() -> None:
                 u = max(sm["probs"], key=sm["probs"].get)
                 print(f"  見送り {head}  本命 {u}番 {names.get(u, '')} 勝率{sm['probs'][u]*100:.0f}%")
     print(f"対象 {n_races}レース / 買い {n_buy}点 (1点100円なら {n_buy*100}円)")
+    wk = workouts.load()
+    print(f"調教タイム補正 (JRA-VAN): {n_work}レースに適用" if n_work else
+          ("調教タイム補正: この日の調教データが無いので未適用 (jravan/load_weekly.py で取り込む)" if wk else
+           "調教タイム補正: 調教データ未取り込み (data/jv_private) のため未適用"))
     if a.hit:
         import numpy as np
         rng = np.random.default_rng(0)

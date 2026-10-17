@@ -5,6 +5,7 @@
     py -3-32 export_jvdata.py                  # 2015年1月以降の、予想に使える全種類
     py -3-32 export_jvdata.py RACE MING        # 種類を絞って取り直す
     py -3-32 export_jvdata.py --from 2010      # 開始年を変える
+    py -3-32 export_jvdata.py --weekly         # 毎週 (金曜の夕方): 今週の出走馬の調教の特徴だけ → jv_weekly_YYYYMMDD.zip (数十KB)
 
 ・JV-Link は 32bit のため、32bit 版の Python が必要 (python.org の "Windows installer (32-bit)")。
 ・JV-Link 設定に データラボの利用キー が入っていること (無いと -301 で失敗する)。
@@ -154,6 +155,125 @@ def export_spec(jv, spec: str, keep: set, alts: list[str], fromtime: str) -> dic
     return n
 
 
+def read_all(jv, spec: str, fromtime: str, option: int, keep: set):
+    """JVOpen して、keep の種類のレコードを全部返す (毎週の取り出し用。量が少ない)。"""
+    res = jv.JVOpen(spec, fromtime, option, 0, 0, "")
+    ret, readcount, downloadcount, _ = (res + (0, 0, ""))[:4] if isinstance(res, tuple) else (res, 0, 0, "")
+    if ret < 0:
+        print(f"JVOpen({spec}) に失敗しました (コード {ret}): {explain(ret)}")
+        jv.JVClose()
+        return []
+    while downloadcount > 0:
+        st = jv.JVStatus()
+        if st < 0 or st >= downloadcount:
+            break
+        time.sleep(1)
+    out = []
+    while True:
+        r = jv.JVRead("", 110000, "")
+        code, buff = (r[0], r[1]) if isinstance(r, tuple) else (r, "")
+        if code > 0:
+            rec = (buff or "").rstrip("\r\n")
+            if rec[:2] in keep:
+                out.append(rec)
+        elif code == -1:
+            continue
+        elif code == -3:
+            time.sleep(1)
+        else:
+            break
+    jv.JVClose()
+    print(f"  {spec}: {len(out):,} 件")
+    return out
+
+
+def tenth(s: str):
+    return int(s) / 10 if s.isdigit() and int(s) > 0 else None
+
+
+def workout_rows(hc: list, wc: list) -> list:
+    """HC・WC のレコード → [血統登録番号, 調教日, トレセン, 坂路H/ウッドW, 4F, ラスト1F] (4F が無いものは除く)。"""
+    rows = []
+    for rec in hc:
+        if len(rec) >= 58:
+            rows.append([rec[24:34], rec[12:20], rec[11], "H", tenth(rec[34:38]), tenth(rec[55:58])])
+    for rec in wc:
+        if len(rec) >= 60:
+            tail = rec[-24:]
+            rows.append([rec[24:34], rec[12:20], rec[11], "W", tenth(tail[0:4]), tenth(tail[21:24])])
+    return [r for r in rows if r[4] is not None]
+
+
+def add_z(rows: list) -> None:
+    """その日・そのトレセン・そのコースの全頭で 4F とラスト1F を標準化して末尾に足す (速いほど +)。workouts.zscores と同じ。"""
+    import statistics
+    groups: dict = {}
+    for r in rows:
+        groups.setdefault((r[3], r[2], r[1]), []).append(r)
+    for g in groups.values():
+        for i in (4, 5):
+            vals = [r[i] for r in g if r[i] is not None]
+            mu = statistics.mean(vals) if vals else 0
+            sd = statistics.stdev(vals) if len(vals) > 1 else 0
+            for r in g:
+                r.append(-(r[i] - mu) / sd if sd and r[i] is not None else None)
+
+
+def horse_features(rows: list, entries: dict, window: int = 14) -> list:
+    """entries {血統登録番号: レース日} → 馬ごとの特徴 [番号, レース日, w_best4, w_best1, w_last4, w_last1, w_n, w_missing]。
+    レース前 window 日 (前日まで) の調教から作る。workouts.race_features と同じ計算。"""
+    import datetime as dt
+    by: dict = {}
+    for r in rows:
+        by.setdefault(r[0], []).append(r)
+    clip = lambda x: max(-4.0, min(4.0, x))
+    out = []
+    for hid, rdate in sorted(entries.items()):
+        d = dt.date(int(rdate[:4]), int(rdate[4:6]), int(rdate[6:8]))
+        lo = (d - dt.timedelta(days=window)).strftime("%Y%m%d")
+        ws = sorted((r for r in by.get(hid, []) if lo <= r[1] < rdate), key=lambda r: r[1])
+        z4 = [r[6] for r in ws if r[6] is not None]
+        z1 = [r[7] for r in ws if r[7] is not None]
+        if not z4:
+            out.append([hid, rdate, 0.0, 0.0, 0.0, 0.0, min(len(ws), 8), 1.0])
+            continue
+        last = ws[-1]
+        out.append([hid, rdate, clip(max(z4)), clip(max(z1)) if z1 else 0.0,
+                    clip(last[6]) if last[6] is not None else 0.0, clip(last[7]) if last[7] is not None else 0.0,
+                    min(len(ws), 8), 0.0])
+    return out
+
+
+def weekly(jv) -> int:
+    """今週の出走馬について、直近の調教 (坂路・ウッド) から予想用の特徴を作って書き出す。"""
+    import datetime as dt
+    today = dt.date.today()
+    since = (today - dt.timedelta(days=21)).strftime("%Y%m%d")
+    print(f"=== 毎週の取り出し ({since} 以降の調教・今週の出走馬) ===")
+    rows = workout_rows(read_all(jv, "SLOP", since + "000000", 1, {"HC"}),
+                        read_all(jv, "WOOD", since + "000000", 1, {"WC"}))
+    add_z(rows)
+    entries = {}
+    for rec in read_all(jv, "RACE", (today - dt.timedelta(days=10)).strftime("%Y%m%d") + "000000", 2, {"SE"}):
+        if rec[11:19] >= today.strftime("%Y%m%d"):
+            entries[rec[30:40]] = rec[11:19]
+    if not entries:
+        print("今週の出馬表がまだ取れません。出馬表は木曜の夕方以降に出るので、金曜にやり直してください。")
+        return 1
+    feats = horse_features(rows, entries)
+    have = sum(1 for f in feats if f[7] == 0)
+    print(f"今週の出走馬 {len(entries):,} 頭 (調教あり {have:,} 頭) / 調教 {len(rows):,} 本")
+    os.makedirs(OUT, exist_ok=True)
+    name = f"jv_weekly_{today.strftime('%Y%m%d')}"
+    csv = "horse_id,race_date,w_best4,w_best1,w_last4,w_last1,w_n,w_missing\n" + "".join(
+        ",".join([f[0], f[1]] + [f"{x:.3f}" if isinstance(x, float) else str(x) for x in f[2:]]) + "\n" for f in feats)
+    zpath = os.path.join(OUT, name + ".zip")
+    with zipfile.ZipFile(zpath, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("features.csv", csv)
+    print(f"\n完了。{zpath} ({os.path.getsize(zpath)/1e3:.0f} KB) を Google ドライブの jvdata_out フォルダに置いてください。")
+    return 0
+
+
 def main():
     args = sys.argv[1:]
     from_year = FROM_YEAR
@@ -177,6 +297,8 @@ def main():
     if ret != 0:
         print(f"JVInit に失敗しました (コード {ret})。JV-Link の設定で利用キーを確認してください。")
         return 1
+    if "--weekly" in args:
+        return weekly(jv)
     shutil.rmtree(WORK, ignore_errors=True)
     os.makedirs(WORK, exist_ok=True)
     os.makedirs(OUT, exist_ok=True)
