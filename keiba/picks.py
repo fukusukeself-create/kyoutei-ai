@@ -3,6 +3,7 @@
     python picks.py              # 今日 (日本時間)
     python picks.py 20261011     # 日付指定
     python picks.py 20261011 --all   # 買い目なしのレースも、勝率1位と期待値最大の馬を表示
+    python picks.py --soon 30        # 今日、発走30分以内のレースだけ (馬単・ワイドは直前のオッズで買う)
     python picks.py 20261011 --hit   # 的中重視: オッズを見ずに、本命の勝率が高いレースの本命を複勝で (モンテカルロで当たる数も)
 
 買う条件は models/profit.json の検証済みの方針 (単勝・期待値しきい値・勝率下限・新馬/未勝利は除外)。
@@ -34,6 +35,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("date", nargs="?", default=dt.datetime.now(JST).strftime("%Y%m%d"))
     ap.add_argument("--all", action="store_true")
+    ap.add_argument("--soon", type=int, help="発走まで この分数以内のレースだけ (例 --soon 30。買う直前の出し直し用)")
     ap.add_argument("--hit", action="store_true", help="的中重視: オッズを見ずに、本命の勝率が高いレースの本命を複勝で買う")
     a = ap.parse_args()
     if not statmodel.available():
@@ -43,12 +45,21 @@ def main() -> None:
     if a.hit:
         print(f"{a.date} 的中重視: 本命の勝率 {HIT_BUY*100:.0f}%以上 → 複勝で買い / {HIT_CAND*100:.0f}%以上 → 候補 (オッズは見ない)")
     else:
-        print(f"{a.date} 単勝 買い条件: 期待値 {rule.get('threshold', 1.3)} 以上 / 勝率 {rule.get('pmin', 0.05)*100:.0f}% 以上 / 新馬・未勝利は除く")
+        print(f"{a.date} 買い条件 (新馬・未勝利は除く): " + " / ".join(
+            f"{k} 期待値{v['threshold']}以上" for k, v in ((pol or strategy.DEFAULT_VALUE_POLICY)["policy"]).items()))
     n_races = n_buy = n_work = 0
     day_bets: list[dict] = []
     hit_ps: list[float] = []
+    now = dt.datetime.now(JST)
     for m in scraper.fetch_meetings(a.date):
         for r in m.races:
+            if a.soon is not None:
+                st = getattr(r, "start", "") or ""
+                if not st or a.date != now.strftime("%Y%m%d"):
+                    continue
+                mins = (int(st[:2]) * 60 + int(st[3:5])) - (now.hour * 60 + now.minute)
+                if not 0 <= mins <= a.soon:
+                    continue
             try:
                 race = scraper.fetch_shutuba(r.race_id, a.date)
                 try:
@@ -95,7 +106,9 @@ def main() -> None:
                 continue
             n_races += 1
             names = {h.umaban: h.name for h in race.horses}
-            buys = strategy.value_bets(sm["probs"], odds, pol, bands).get("単勝", [])
+            vb = strategy.value_bets(sm["probs"], odds, pol, bands)
+            buys = vb.get("単勝", [])
+            exotic = [t for k in ("ワイド", "馬単") for t in vb.get(k, [])]
             head = f"{m.venue}{r.rno}R {r.start if hasattr(r, 'start') else ''} {race.surface}{race.distance}m {race.cls or race.grade}"
             sim = mc.probs(sm["probs"], 20000) if buys else None
             for t in buys:
@@ -104,7 +117,14 @@ def main() -> None:
                 print(f"★買い {head}  {u}番 {names.get(u, '')}  勝率{t.prob*100:.1f}% 3着内{sim['place'].get(u, 0)*100:.0f}% "
                       f"オッズ{t.odds:.1f} 期待値{t.ev:.2f}")
                 day_bets.append(dict(race_id=r.race_id, win=sm["probs"], kind="単勝", umaban=u, odds=t.odds, stake=100))
-            if not buys and a.all:
+            for t in exotic:
+                n_buy += 1
+                sep = "→" if t.kind == "馬単" else "-"
+                nm = sep.join(f"{u}番{names.get(u, '')}" for u in t.combo)
+                print(f"★{t.kind} {head}  {nm}  確率{t.prob*100:.1f}% オッズ{t.odds:.1f} 期待値{t.ev:.2f}")
+                day_bets.append(dict(race_id=r.race_id, win=sm["probs"], kind=t.kind, umaban=t.combo[0], second=t.combo[1],
+                                     odds=t.odds, stake=100))
+            if not buys and not exotic and a.all:
                 u = max(sm["probs"], key=sm["probs"].get)
                 print(f"  見送り {head}  本命 {u}番 {names.get(u, '')} 勝率{sm['probs'][u]*100:.0f}%")
     print(f"対象 {n_races}レース / 買い {n_buy}点 (1点100円なら {n_buy*100}円)")
@@ -123,11 +143,12 @@ def main() -> None:
         return
     if day_bets:
         s = mc.day_pnl(day_bets, 50000)
-        print(f"\nモンテカルロ (この日の買い目を5万回模擬、勝率はモデルどおりと仮定): 収支の平均 {s['mean']:+.0f}円 / "
-              f"プラスで終わる確率 {s['p_profit']*100:.0f}% / 全部外れる確率 {s['p_zero_hit']*100:.0f}% / "
-              f"収支の幅 (5%〜95%) {s['q05']:+.0f}円〜{s['q95']:+.0f}円")
-        print("※ 勝率はモデルの推定値。検証では、この買い方の回収率は90%前後 (平均ではマイナス) だった。")
-
+        print(f"\nモンテカルロ (この日の買い目を5万回模擬): 1点も当たらない確率 {s['p_zero_hit']*100:.0f}%")
+        print("※ 収支の見込みは出さない (モデルの確率を正しいと仮定すると楽観的になりすぎるため)。"
+              "検証 (2026年・学習外・JRA-VAN の確定オッズ): 単勝 期待値1.1以上 292点 回収105%、ワイド 1.5以上 591点 104%、"
+              "馬単 1.5以上 1,370点 109% (馬単は的中1%台)。どれも点数が少なく偶然の幅が大きい。")
+        print("※ 馬単・ワイドは前日や朝のオッズだと期待値が高く出すぎる (売れている量が少ないため)。"
+              "検証は発走時点の確定オッズで行ったので、買うのは発走10〜30分前に出し直して残った組だけにする。")
 
 if __name__ == "__main__":
     main()

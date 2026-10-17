@@ -49,7 +49,7 @@ def probs(win: dict[int, float], n: int = 20000, **kw) -> dict:
 
 
 def day_pnl(bets: list[dict], n: int = 20000, rng=None, **kw) -> dict:
-    """1日の買い目の収支を模擬する。bets: [{win: 勝率dict, kind: '単勝'|'複勝', umaban, odds, stake}]。
+    """1日の買い目の収支を模擬する。bets: [{win: 勝率dict, kind: '単勝'|'複勝'|'馬単'|'ワイド', umaban, second (2頭目), odds, stake}]。
     同じレースの買い目は同じ着順の模擬を使う (レースどうしは独立)。"""
     rng = rng or np.random.default_rng(0)
     total = np.zeros(n)
@@ -62,7 +62,14 @@ def day_pnl(bets: list[dict], n: int = 20000, rng=None, **kw) -> dict:
         pos = {u: i for i, u in enumerate(us)}
         for b in bs:
             i = pos[b["umaban"]]
-            hit = (o[:, 0] == i) if b["kind"] == "単勝" else (o == i).any(axis=1)
+            if b["kind"] == "単勝":
+                hit = o[:, 0] == i
+            elif b["kind"] == "馬単":
+                hit = (o[:, 0] == i) & (o[:, 1] == pos[b["second"]])
+            elif b["kind"] == "ワイド":
+                hit = (o == i).any(axis=1) & (o == pos[b["second"]]).any(axis=1)
+            else:   # 複勝
+                hit = (o == i).any(axis=1)
             total += np.where(hit, b["odds"] * b["stake"], 0.0)
             stake += b["stake"]
     pnl = total - stake
