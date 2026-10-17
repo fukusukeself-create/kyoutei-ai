@@ -16,6 +16,7 @@ import streamlit as st
 import json
 
 import evidence
+import grades
 import model as heuristic
 import mybets
 import scraper
@@ -156,8 +157,11 @@ def plan_one(race_id: str, date: str, _bucket: int):
     skip = strategy.skip_reason(race, bands)
     rc = strategy.recommend(sm["probs"], {"win": wo}, (statmodel.load() or {}).get("value_policy"), bands, skip)
     names = {h.umaban: h.name for h in race.horses}
+    gr = [{k: v for k, v in g.items() if k != "_scores"}
+          for g in grades.race_grades(race, sm, sm["probs"], statmodel.load()["stats"], evidence.race_workouts(race))]
     return dict(mark=rc["mark"], umaban=rc["umaban"], name=names.get(rc["umaban"], ""), prob=rc["prob"], odds=rc["odds"],
-                ev=rc["ev"], fuku=rc["fuku"], skip=bool(skip), course=race.course)
+                ev=rc["ev"], fuku=rc["fuku"], skip=bool(skip), course=race.course, grades=gr,
+                grade=next((g["総合"] for g in gr if g["umaban"] == rc["umaban"]), ""))
 
 
 def waku_html(w: int) -> str:
@@ -352,7 +356,39 @@ if is_today and meetings:
     with st.container(key="planlist_live"):
         live_picks()
 
-tab_plan, tab_grid, tab_time, tab_my = st.tabs(["📋 今日の買い目", "🏁 開催一覧", "⏰ 発走順", "💴 my収支"])
+def compute_all(all_races):
+    """全レースの plan_one (4本並列・進み具合を表示)。"""
+    bar = st.progress(0.0, text="全レースを計算中…")
+    bucket = int(time.time() // 300)
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    def _one(rid):
+        try:
+            return plan_one(rid, date_str, bucket)
+        except scraper.ScrapeError:
+            return None
+    got: dict = {}
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        futs = {ex.submit(_one, r.race_id): r.race_id for r, _ in all_races}
+        for i, f in enumerate(as_completed(futs), 1):
+            got[futs[f]] = f.result()
+            bar.progress(i / len(all_races), text=f"全レースを計算中… {i}/{len(all_races)}")
+    bar.empty()
+    return [(r, m, got.get(r.race_id)) for r, m in all_races]
+
+
+GRADE_NOTE = ('総合 = 統計モデルの最終の勝率 (近走・騎手・血統・調教・枠・馬場など110項目＋オッズ) から。学習外の2026年で実際に勝った割合は '
+              + "・".join(f"{k} {v}" for k, v in grades.OVERALL_ACTUAL.items())
+              + '。騎手 = 通算勝率4割・直近60日の勝率4割・この競馬場の勝率2割 (騎手全体の平均は約7%)。分野 (騎手〜枠・展開) は、その分野だけの成績を全出走馬の中で比べたもの (上位5% S・10% A・15% B・20% C・20% D・15% E・10% F・5% G)。'
+              '相性 = この馬のこのコース・距離・芝ダ・馬場での成績。コンビ = この騎手が乗った近走 (検証で予想を良くしなかったので表示だけ)。')
+
+
+def grade_table(gr: list[dict]) -> pd.DataFrame:
+    return pd.DataFrame([{"馬番": g["umaban"], "馬名": g["name"], "総合": g["総合"], "勝率": f"{g['p']*100:.0f}%",
+                          **{k: g[k] for k in grades.FACTORS}, "騎手名": g["jockey"], "騎手60日": g["騎手60日"], "コンビ": g["コンビ"]} for g in gr])
+
+
+tab_plan, tab_rank, tab_grid, tab_time, tab_my = st.tabs(["📋 今日の買い目", "🏅 全馬ランク", "🏁 開催一覧", "⏰ 発走順", "💴 my収支"])
 with tab_plan:
     st.markdown('<div class="note">全レースの「単勝のこの1頭」。🟢◎ = 勝負 (期待値買い) / 🔵○ = いつもの1頭 / ⚠ = 精度が低いレース。'
                 '押すと、そのレースの詳しい画面 (下) に移る。</div>', unsafe_allow_html=True)
@@ -360,23 +396,7 @@ with tab_plan:
     if all_races and st.button("📋 全レースの買い目を出す (初回は1〜2分)", type="primary", use_container_width=True):
         ss["plan_date"] = date_str
     if all_races and ss.get("plan_date") == date_str:
-        bar = st.progress(0.0, text="全レースを計算中…")
-        bucket = int(time.time() // 300)
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-
-        def _one(rid):
-            try:
-                return plan_one(rid, date_str, bucket)
-            except scraper.ScrapeError:
-                return None
-        got: dict = {}
-        with ThreadPoolExecutor(max_workers=4) as ex:
-            futs = {ex.submit(_one, r.race_id): r.race_id for r, _ in all_races}
-            for i, f in enumerate(as_completed(futs), 1):
-                got[futs[f]] = f.result()
-                bar.progress(i / len(all_races), text=f"全レースを計算中… {i}/{len(all_races)}")
-        out = [(r, m, got.get(r.race_id)) for r, m in all_races]
-        bar.empty()
+        out = compute_all(all_races)
         n_maru = sum(1 for _, _, pp in out if pp and pp["mark"] == "◎")
         st.caption(f"{len(out)}レース (◎ {n_maru}) / {dt.datetime.now(JST).strftime('%H:%M')} のオッズ。オッズは動くので、買う前に各レースで「オッズ更新」。")
         plan_box = st.container(key="planlist")
@@ -389,9 +409,26 @@ with tab_plan:
                 o = f"・{pp['odds']}倍" if pp["odds"] else ""
                 fk = f"  \n複勝なら {pp['fuku']}番" if pp["fuku"] else ""
                 lab = (f"{icon} **{r.start} {m.venue}{r.rno}R** {pp['course']}{' (発走済)' if done else ''}  \n"
-                       f"単勝 **{pp['umaban']}番 {pp['name']}** (勝率{pp['prob']*100:.0f}%{o}){fk}")
+                       f"単勝 **{pp['umaban']}番 {pp['name']}** [総合{pp.get('grade', '')}] (勝率{pp['prob']*100:.0f}%{o}){fk}")
             plan_box.button(lab, key=f"pl_{r.race_id}", use_container_width=True, on_click=select_race, args=(m.venue, r.rno),
                             disabled=pp is None)
+with tab_rank:
+    st.markdown('<div class="note">全レース・全馬の S〜G ランク。' + GRADE_NOTE + '</div>', unsafe_allow_html=True)
+    all_r = sorted([(r, m) for m in meetings for r in m.races], key=lambda x: (x[1].venue, x[0].rno))
+    if all_r and st.button("🏅 全馬のランクを出す (初回は1〜2分)", use_container_width=True, key="rank_go"):
+        ss["rank_date"] = date_str
+    if all_r and ss.get("rank_date") == date_str:
+        res_all = compute_all(all_r)
+        venues = [v for v in VENUE_ORDER if any(m.venue == v for _, m, _ in res_all)]
+        vsel = st.pills("競馬場", venues, default=venues[0] if venues else None, key="rank_venue")
+        for r, m, pp in res_all:
+            if m.venue != vsel:
+                continue
+            st.markdown(f'<div class="sec">{m.venue}{r.rno}R {r.start} {r.name} ({r.course})</div>', unsafe_allow_html=True)
+            if not pp or not pp.get("grades"):
+                st.caption("取得できませんでした")
+                continue
+            st.dataframe(grade_table(pp["grades"]), hide_index=True, use_container_width=True)
 with tab_grid, st.container(key="venuegrid"):
     for row_start in range(0, len(VENUE_ORDER), 5):
         cols = st.columns(5, gap="small", wrap=False)
@@ -569,6 +606,8 @@ if res and res["race_id"] == (rs.race_id if rs else None):
     # --- 全馬の勝率
     st.markdown('<div class="sec">全馬の勝率</div>', unsafe_allow_html=True)
     info = statmodel.horse_info(race, evidence.extra_form((est.get("rides_prev") or []) + (est.get("rides_today") or []))) if statmodel.available() else {}
+    gr_rows = grades.race_grades(race, est["sm"], plan.win_probs, statmodel.load()["stats"], evidence.race_workouts(race)) if est.get("sm") else []
+    gmap = {g["umaban"]: g for g in gr_rows}
     rows, rows_d = [], []
     for h in ranked:
         hu = h.umaban
@@ -577,7 +616,7 @@ if res and res["race_id"] == (rs.race_id if rs else None):
         hi = info.get(hu, {})
         jn, jw = hi.get("jockey_form", (0, 0))
         mk = "◎" if hu == u and rc["mark"] == "◎" else "○" if hu == u else ""
-        rows.append({"": mk, "馬番": hu, "馬名": h.name, "勝率": f"{p*100:.1f}%", "3着内": f"{plan.place_probs.get(hu, 0)*100:.0f}%",
+        rows.append({"": mk, "馬番": hu, "馬名": h.name, "ランク": (gmap.get(hu) or {}).get("総合", "-"), "勝率": f"{p*100:.1f}%", "3着内": f"{plan.place_probs.get(hu, 0)*100:.0f}%",
                      "単勝": f"{o:.1f}" if o else "-", "期待値": f"{p*o:.2f}" if o else "-"})
         rows_d.append({"馬番": hu, "馬名": h.name, "調教": f"{h.oik_rank} {h.oik_critic}".strip() or "-", "騎手": h.jockey,
                        "騎手 直近60日の勝率": f"{jw/jn*100:.0f}% ({jn}戦{jw}勝)" if jn else "-", "父系統": hi.get("sire_line") or "-",
@@ -585,6 +624,10 @@ if res and res["race_id"] == (rs.race_id if rs else None):
     st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True,
                  column_config={"": st.column_config.TextColumn(width="small"), "馬番": st.column_config.NumberColumn(width="small")})
     st.markdown('<div class="note">期待値 = 勝率 × 単勝オッズ。1.0 を超えると、市場が過小評価していると判断した馬。</div>', unsafe_allow_html=True)
+    if gr_rows:
+        st.markdown('<div class="sec">🏅 全馬のランク (S〜G)</div>', unsafe_allow_html=True)
+        st.dataframe(grade_table(gr_rows), hide_index=True, use_container_width=True)
+        st.markdown(f'<div class="note">{GRADE_NOTE}</div>', unsafe_allow_html=True)
     with st.expander("詳しい情報 (調教・騎手・血統・根拠)"):
         st.dataframe(pd.DataFrame(rows_d), hide_index=True, use_container_width=True)
         pick = st.selectbox("この馬の根拠を見る", [h.umaban for h in ranked],

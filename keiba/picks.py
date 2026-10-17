@@ -25,6 +25,8 @@ os.environ.setdefault("KEIBA_PREFER_CURL", "1")
 
 import evidence  # noqa: E402
 import features as F  # noqa: E402
+import grades  # noqa: E402
+import grades  # noqa: E402
 import montecarlo as mc  # noqa: E402
 import workouts  # noqa: E402
 import scraper  # noqa: E402
@@ -49,6 +51,8 @@ def main() -> None:
                     help="レースごとのおすすめの賭け方を1行で (単勝が基本: 単勝の期待値買い → 本命の複勝 → 参考のワイド・馬単 → 見送り)")
     ap.add_argument("--min", type=int, default=0, help="--soon と一緒に: 発走まで この分数未満のレースは除く")
     ap.add_argument("--once", help="--soon と一緒に: 出したレースをこのファイルに記録し、2回目からは出さない")
+    ap.add_argument("--grades", action="store_true", help="--plan で、全馬の S〜G ランク (総合と分野ごと) も出す")
+    ap.add_argument("--grades", action="store_true", help="--plan で、全馬の S〜G ランク (総合と分野ごと) も出す")
     ap.add_argument("--why", action="store_true", help="--plan で、おすすめの馬の根拠も出す")
     ap.add_argument("--hit", action="store_true", help="的中重視: オッズを見ずに、本命の勝率が高いレースの本命を複勝で買う")
     a = ap.parse_args()
@@ -133,6 +137,18 @@ def main() -> None:
                 if a.once:
                     shown.add(r.race_id)
                     json.dump(sorted(shown), open(a.once, "w"))
+                if a.grades and sm.get("features"):
+                    gr = grades.race_grades(race, sm, sm["probs"], statmodel.load()["stats"], evidence.race_workouts(race))
+                    print("      馬番 馬名 総合(勝率) | " + " ".join(grades.FACTORS) + " | 騎手 コンビ")
+                    for g in gr:
+                        print(f"      {g['umaban']:>2} {g['name']} {g['総合']}({g['p']*100:.0f}%) | "
+                              + " ".join(g[k] for k in grades.FACTORS) + f" | {g['jockey']} {g['コンビ']}")
+                if a.grades and sm.get("features"):
+                    gr = grades.race_grades(race, sm, sm["probs"], statmodel.load()["stats"], evidence.race_workouts(race))
+                    print("      馬番 馬名 総合(勝率) | " + " ".join(grades.FACTORS) + " | 騎手 60日 コンビ")
+                    for g in gr:
+                        print(f"      {g['umaban']:>2} {g['name']} {g['総合']}({g['p']*100:.0f}%) | "
+                              + " ".join(g[k] for k in grades.FACTORS) + f" | {g['jockey']} {g['騎手60日']} {g['コンビ']}")
                 if a.why and sm.get("features"):
                     ev = evidence.reasons(x, race, sm, statmodel.load()["stats"], race_wk=evidence.race_workouts(race),
                                           rides_today=rides_today, rides_prev=rides_prev)
