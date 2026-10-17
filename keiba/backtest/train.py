@@ -303,6 +303,7 @@ def main():
     ap.add_argument("--objective", choices=["binary", "rank"], default="binary")
     ap.add_argument("--fold-start", help="この開始日の fold だけ計算する (例 20260101)")
     ap.add_argument("--oos", default=OOS, help="学習外の予想の保存先")
+    ap.add_argument("--final-only", action="store_true", help="検証 (fold) を飛ばして、本番用の全期間学習だけ行う")
     ap.add_argument("--no-final", action="store_true", help="検証 (fold) だけ行い、本番用の全期間学習はしない")
     ap.add_argument("--dump", help="各 fold の特徴量 (学習・検証) をこのフォルダに pickle で保存する (別の手法の比較用)")
     ap.add_argument("--workouts", action="store_true",
@@ -325,6 +326,8 @@ def main():
     print(f"races {len(races)} runners {len(runners)} {races.date.min()}..{races.date.max()}", flush=True)
 
     oos = []
+    if args.final_only:
+        folds = []
     for start, end in folds:
         tr_r = runners[runners.date < start]
         va_races = races[(races.date >= start) & (races.date < end)]
@@ -367,43 +370,45 @@ def main():
               f"logloss pure {logloss(df_va, 'p_pure'):.4f} market-corrected {logloss(df_va, 'p_model'):.4f} "
               f"market {logloss(df_va, 'p_market'):.4f}", flush=True)
 
-    valid = pd.concat(oos, ignore_index=True)
-    best_w, best_ll = 0.0, 9.9
-    for w in np.arange(0.0, 1.001, 0.05):
-        valid["_b"] = blend(valid.p_model, valid.p_market, valid.race_id, w)
-        ll = logloss(valid, "_b")
-        if ll < best_ll:
-            best_w, best_ll = round(float(w), 2), ll
-    valid["p_blend"] = blend(valid.p_model, valid.p_market, valid.race_id, best_w)
-    valid.drop(columns=["_b"]).to_csv(args.oos if wk is None else args.oos.replace(".csv", "_wk.csv"), index=False)
+    metrics = {}
+    if not args.final_only:
+        valid = pd.concat(oos, ignore_index=True)
+        best_w, best_ll = 0.0, 9.9
+        for w in np.arange(0.0, 1.001, 0.05):
+            valid["_b"] = blend(valid.p_model, valid.p_market, valid.race_id, w)
+            ll = logloss(valid, "_b")
+            if ll < best_ll:
+                best_w, best_ll = round(float(w), 2), ll
+        valid["p_blend"] = blend(valid.p_model, valid.p_market, valid.race_id, best_w)
+        valid.drop(columns=["_b"]).to_csv(args.oos if wk is None else args.oos.replace(".csv", "_wk.csv"), index=False)
 
-    top = valid.loc[valid.groupby("race_id").p_model.idxmax()]
-    topp = valid.loc[valid.groupby("race_id").p_pure.idxmax()]
-    topm = valid.loc[valid.groupby("race_id").p_market.idxmax()]
-    topb = valid.loc[valid.groupby("race_id").p_blend.idxmax()]
-    metrics = dict(
-        races=int(valid.race_id.nunique()), valid_period=[str(valid.date.min()), str(valid.date.max())],
-        logloss_model=logloss(valid, "p_model"), logloss_market=logloss(valid, "p_market"), logloss_pure=logloss(valid, "p_pure"),
-        top1_hit_pure=float(topp.is_win.mean()), top1_roi_pure=float((topp.is_win * topp.odds).mean()),
-        logloss_blend=best_ll, blend_w_market=best_w,
-        top1_hit_model=float(top.is_win.mean()), top1_hit_market=float(topm.is_win.mean()),
-        top1_hit_blend=float(topb.is_win.mean()),
-        top1_roi_model=float((top.is_win * top.odds).mean()), top1_roi_market=float((topm.is_win * topm.odds).mean()),
-    )
-    for name, col in (("model", "p_model"), ("pure", "p_pure"), ("blend", "p_blend")):
-        pick = valid[(valid[col] * valid.odds >= 1.1) & (valid[col] >= 0.06)]
-        metrics[f"tansho_{name}_bets"] = int(len(pick))
-        metrics[f"tansho_{name}_roi"] = float((pick.is_win * pick.odds).mean()) if len(pick) else None
-        metrics[f"tansho_{name}_hit"] = float(pick.is_win.mean()) if len(pick) else None
-    print(json.dumps(metrics, ensure_ascii=False, indent=1), flush=True)
-    if wk is not None:   # 検証だけ。本番の models は作り直さない
-        for y in ("2025", "2026"):
-            v = valid[valid.date.astype(str).str[:4] == y]
-            for th in (1.0, 1.1):
-                pick = v[(v.p_model * v.odds >= th) & (v.p_model >= 0.05)]
-                print(f"{y} 単勝 期待値{th}以上: {len(pick)}点 回収 {(pick.is_win * pick.odds).mean()*100:.1f}%  "
-                      f"対数損失 {logloss(v, 'p_model'):.4f} (市場 {logloss(v, 'p_market'):.4f})", flush=True)
-        return
+        top = valid.loc[valid.groupby("race_id").p_model.idxmax()]
+        topp = valid.loc[valid.groupby("race_id").p_pure.idxmax()]
+        topm = valid.loc[valid.groupby("race_id").p_market.idxmax()]
+        topb = valid.loc[valid.groupby("race_id").p_blend.idxmax()]
+        metrics = dict(
+            races=int(valid.race_id.nunique()), valid_period=[str(valid.date.min()), str(valid.date.max())],
+            logloss_model=logloss(valid, "p_model"), logloss_market=logloss(valid, "p_market"), logloss_pure=logloss(valid, "p_pure"),
+            top1_hit_pure=float(topp.is_win.mean()), top1_roi_pure=float((topp.is_win * topp.odds).mean()),
+            logloss_blend=best_ll, blend_w_market=best_w,
+            top1_hit_model=float(top.is_win.mean()), top1_hit_market=float(topm.is_win.mean()),
+            top1_hit_blend=float(topb.is_win.mean()),
+            top1_roi_model=float((top.is_win * top.odds).mean()), top1_roi_market=float((topm.is_win * topm.odds).mean()),
+        )
+        for name, col in (("model", "p_model"), ("pure", "p_pure"), ("blend", "p_blend")):
+            pick = valid[(valid[col] * valid.odds >= 1.1) & (valid[col] >= 0.06)]
+            metrics[f"tansho_{name}_bets"] = int(len(pick))
+            metrics[f"tansho_{name}_roi"] = float((pick.is_win * pick.odds).mean()) if len(pick) else None
+            metrics[f"tansho_{name}_hit"] = float(pick.is_win.mean()) if len(pick) else None
+        print(json.dumps(metrics, ensure_ascii=False, indent=1), flush=True)
+        if wk is not None:   # 検証だけ。本番の models は作り直さない
+            for y in ("2025", "2026"):
+                v = valid[valid.date.astype(str).str[:4] == y]
+                for th in (1.0, 1.1):
+                    pick = v[(v.p_model * v.odds >= th) & (v.p_model >= 0.05)]
+                    print(f"{y} 単勝 期待値{th}以上: {len(pick)}点 回収 {(pick.is_win * pick.odds).mean()*100:.1f}%  "
+                          f"対数損失 {logloss(v, 'p_model'):.4f} (市場 {logloss(v, 'p_market'):.4f})", flush=True)
+            return
 
     if args.no_final:
         return

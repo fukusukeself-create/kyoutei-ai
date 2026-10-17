@@ -497,7 +497,7 @@ with st.expander("📒 成績・答え合わせ (台帳)"):
         st.download_button("CSVで書き出す", ledger.export_csv().encode("utf-8-sig"), file_name="keiba_ledger.csv",
                            mime="text/csv", use_container_width=True)
 
-if meta and meta.get("metrics"):
+if meta and (meta.get("metrics") or {}).get("valid_period"):
     mt = meta["metrics"]
     with st.expander("📈 モデルの検証成績"):
         st.caption(f"時系列検証: 2025年前半・後半・2026年をそれぞれ「それ以前のデータだけで学習」して予想 / 検証 {mt['valid_period'][0]}〜{mt['valid_period'][1]} ({mt['races']:,}レース)")
