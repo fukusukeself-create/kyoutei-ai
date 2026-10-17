@@ -34,8 +34,9 @@ h1, h2, h3 { margin: 0.2rem 0 0.4rem 0 !important; }
 div[data-testid="stPills"] button { min-height: 38px; font-size: 15px; padding: 2px 10px; }
 .st-key-venuegrid button { padding: 4px 2px !important; min-height: 74px; line-height: 1.3; white-space: normal !important; }
 .st-key-venuegrid button p { font-size: 12px !important; }
-.st-key-planlist button { justify-content:flex-start !important; }
-.st-key-planlist button p { text-align:left; font-size:0.9rem; }
+.st-key-planlist button, .st-key-planlist_live button { justify-content:flex-start !important; }
+.st-key-planlist button p, .st-key-planlist_live button p { text-align:left; font-size:0.9rem; }
+.st-key-planlist_live button { border:2px solid #f59e0b !important; }
 .tk { display:flex; justify-content:space-between; align-items:center; padding:6px 9px; margin:4px 0;
       background:#fff; color:#111827; border:1px solid #d9e2dc; border-radius:6px; font-size:0.93rem; }
 .tk .cmb { font-weight:900; font-size:1.03rem; }
@@ -282,6 +283,50 @@ if not meetings and not sched_error:
         st.info(f"{race_date.strftime('%-m/%-d')} は中央競馬の開催がありません。次の開催は {nd.strftime('%-m/%-d')} です。")
         if st.button(f"➡ {nd.strftime('%-m/%-d')} の開催を見る", use_container_width=True):
             ss.race_date = nd.date(); st.rerun()
+
+LIVE_AHEAD = 40   # 発走まで この分数以内のレースを「直前の買い目」に出す
+
+
+@st.fragment(run_every=60)
+def live_picks() -> None:
+    """発走が近いレースの買い目を、1分ごとに最新のオッズで自動で出し直す (ボタン不要)。"""
+    t = dt.datetime.now(JST)
+    hm = t.strftime("%H:%M")
+    soon = []
+    for m in meetings:
+        for r in m.races:
+            mins = (int(r.start[:2]) * 60 + int(r.start[3:5])) - (t.hour * 60 + t.minute)
+            if -1 <= mins <= LIVE_AHEAD:
+                soon.append((mins, r, m))
+    soon.sort(key=lambda x: (x[0], x[2].venue))
+    st.markdown(f'<div class="sec">⏱ 直前の買い目 (発走{LIVE_AHEAD}分前から自動表示・1分ごとに更新 {hm})</div>', unsafe_allow_html=True)
+    if not soon:
+        nxt = min(((r.start, m.venue, r.rno) for m in meetings for r in m.races if r.start > hm), default=None)
+        st.caption(f"次は {nxt[0]} {nxt[1]}{nxt[2]}R。発走{LIVE_AHEAD}分前になると、ここに自動で出ます。" if nxt else "今日のレースは終わりました。")
+        return
+    bucket = int(time.time() // 60)
+    for mins, r, m in soon:
+        try:
+            pp = plan_one(r.race_id, date_str, bucket)
+        except Exception:
+            pp = None
+        when = "まもなく発走" if mins <= 1 else f"発走まで{mins}分"
+        if not pp:
+            st.caption(f"{r.start} {m.venue}{r.rno}R — 取得できませんでした (次の更新で再取得)")
+            continue
+        icon = "🟢◎" if pp["mark"] == "◎" else ("⚠○" if pp["skip"] else "🔵○") if pp["mark"] == "○" else "⚪－"
+        o = f"・{pp['odds']}倍・期待値{pp['ev']:.2f}" if pp["odds"] else ""
+        fk = f"  \n複勝なら {pp['fuku']}番" if pp["fuku"] else ""
+        lab = (f"{icon} **{r.start} {m.venue}{r.rno}R** ({when}) {pp['course']}  \n"
+               f"単勝 **{pp['umaban']}番 {pp['name']}** (勝率{pp['prob']*100:.0f}%{o}){fk}")
+        if st.button(lab, key=f"live_{r.race_id}", use_container_width=True):
+            select_race(m.venue, r.rno)
+            st.rerun()
+
+
+if is_today and meetings:
+    with st.container(key="planlist_live"):
+        live_picks()
 
 tab_plan, tab_grid, tab_time = st.tabs(["📋 今日の買い目", "🏁 開催一覧", "⏰ 発走順"])
 with tab_plan:

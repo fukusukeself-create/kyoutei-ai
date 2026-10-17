@@ -6,6 +6,7 @@
     python picks.py 20261018 --plan  # レースごとのおすすめの賭け方を1行で (単勝が基本)
     python picks.py 20261018 --plan --why   # おすすめの馬の根拠 (勝率の内訳・調教タイム・騎手の前日と今日) も
     python picks.py --soon 30        # 今日、発走30分以内のレースだけ (馬単・ワイドは直前のオッズで買う)
+    python picks.py --soon 30 --min 5 --once shown.json --plan --why   # 発走5〜30分前で、まだ出していないレースだけ
     python picks.py 20261011 --hit   # 的中重視: オッズを見ずに、本命の勝率が高いレースの本命を複勝で (モンテカルロで当たる数も)
 
 買う条件は models/profit.json の検証済みの方針 (単勝・期待値しきい値・勝率下限・新馬/未勝利は除外)。
@@ -46,6 +47,8 @@ def main() -> None:
     ap.add_argument("--soon", type=int, help="発走まで この分数以内のレースだけ (例 --soon 30。買う直前の出し直し用)")
     ap.add_argument("--plan", action="store_true",
                     help="レースごとのおすすめの賭け方を1行で (単勝が基本: 単勝の期待値買い → 本命の複勝 → 参考のワイド・馬単 → 見送り)")
+    ap.add_argument("--min", type=int, default=0, help="--soon と一緒に: 発走まで この分数未満のレースは除く")
+    ap.add_argument("--once", help="--soon と一緒に: 出したレースをこのファイルに記録し、2回目からは出さない")
     ap.add_argument("--why", action="store_true", help="--plan で、おすすめの馬の根拠も出す")
     ap.add_argument("--hit", action="store_true", help="的中重視: オッズを見ずに、本命の勝率が高いレースの本命を複勝で買う")
     a = ap.parse_args()
@@ -64,10 +67,13 @@ def main() -> None:
     # 前日の結果を騎手・調教師の直近60日に足す (学習と同じ扱い)。今日の結果は表示だけ
     prev = evidence.prev_kaisai(a.date)
     rides_prev = evidence.day_rides(prev) if prev else []
-    rides_today = evidence.day_rides(a.date) if a.date <= now_str() else []
+    rides_today = (evidence.day_rides(a.date, dt.datetime.now(JST).strftime("%H:%M")) if a.date == now_str()
+                   else evidence.day_rides(a.date) if a.date < now_str() else [])
     xform = evidence.extra_form(rides_prev + rides_today)
     if prev:
         print(f"騎手・調教師の調子: {prev[4:6]}/{prev[6:]} の結果 {len(rides_prev)}騎乗を反映")
+    import json
+    shown = set(json.load(open(a.once))) if a.once and os.path.exists(a.once) else set()
     n_races = n_buy = n_work = 0
     day_bets: list[dict] = []
     hit_ps: list[float] = []
@@ -79,7 +85,9 @@ def main() -> None:
                 if not st or a.date != now.strftime("%Y%m%d"):
                     continue
                 mins = (int(st[:2]) * 60 + int(st[3:5])) - (now.hour * 60 + now.minute)
-                if not 0 <= mins <= a.soon:
+                if not a.min <= mins <= a.soon:
+                    continue
+                if a.once and r.race_id in shown:
                     continue
             try:
                 race = scraper.fetch_shutuba(r.race_id, a.date)
@@ -122,6 +130,9 @@ def main() -> None:
                 if skip:
                     extra.append("注意: " + (skip[:-3] if skip.endswith('のため') else skip.removesuffix('ため')))
                 print(f"{head} | {rec} | {fav}" + (f" | {' / '.join(extra)}" if extra else ""))
+                if a.once:
+                    shown.add(r.race_id)
+                    json.dump(sorted(shown), open(a.once, "w"))
                 if a.why and sm.get("features"):
                     ev = evidence.reasons(x, race, sm, statmodel.load()["stats"], race_wk=evidence.race_workouts(race),
                                           rides_today=rides_today, rides_prev=rides_prev)
