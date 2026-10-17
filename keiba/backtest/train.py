@@ -301,6 +301,7 @@ def main():
     ap.add_argument("--folds", type=int, default=len(FOLDS))
     ap.add_argument("--valid-from", help="動作確認用: この日以降を1つの検証期間にする")
     ap.add_argument("--objective", choices=["binary", "rank"], default="binary")
+    ap.add_argument("--dump", help="各 fold の特徴量 (学習・検証) をこのフォルダに pickle で保存する (別の手法の比較用)")
     ap.add_argument("--workouts", action="store_true",
                     help="JRA-VAN の調教タイム (jravan/data) を市場補正モデルの特徴量に足す (検証用。本番の models には使わない)")
     args = ap.parse_args()
@@ -340,6 +341,10 @@ def main():
             df_va["p_raw"] = win_m.predict(df_va[F.FEATURES])
             df_va["p_pure"] = norm_in_race(df_va, "p_raw")
         MF = F.FEATURES + F.MARKET_FEATURES
+        if args.dump:
+            os.makedirs(args.dump, exist_ok=True)
+            df_tr.to_pickle(os.path.join(args.dump, f"tr_{start}.pkl"))
+            df_va.to_pickle(os.path.join(args.dump, f"va_{start}.pkl"))
         if wk is not None:
             df_tr = df_tr.merge(wk, on=["race_id", "umaban_id"], how="left")
             df_va = df_va.merge(wk, on=["race_id", "umaban_id"], how="left")
