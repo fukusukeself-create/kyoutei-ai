@@ -501,3 +501,32 @@ def trio_top(win: dict[int, float], odds: dict[str, dict[str, float]] | None, k:
     table = (odds or {}).get("sanrenpuku", {})
     ranked = sorted(trio.items(), key=lambda kv: -kv[1])[:k]
     return [Ticket("三連複", c, p, _odds_of(table, c)) for c, p in ranked]
+
+
+EVERY_PMIN = 0.10   # 毎レース1頭買うときの候補 (勝率10%以上で期待値1位。2025〜2026年の学習外で 的中約23% 回収約91%)
+HIT_BUY = 0.50      # 本命の勝率がこれ以上なら 複勝でも買える (学習外で 的中約89% 回収約97%)
+
+
+def recommend(win: dict[int, float], odds: dict[str, dict[str, float]] | None, policy: dict | None,
+              bands: dict, skip: str | None) -> dict:
+    """レースごとのおすすめ (単勝が基本)。
+    mark: ◎ = 期待値買いの条件を満たす (勝負) / ○ = いつもの1頭 (勝率10%以上で期待値1位) / － = オッズ未発売で本命。
+    fuku: 本命の勝率が HIT_BUY 以上なら その馬番 (複勝の候補)。exotic: 参考のワイド・馬単 (期待値の下限以上)。"""
+    odds = odds or {}
+    wo = odds.get("win") or {}
+    fav = max(win, key=win.get)
+    vb = value_bets(win, odds, policy, bands) if wo and not skip else {}
+    tan = vb.get("単勝", [])
+    if tan:
+        t = tan[0]
+        mark, u, o = "◎", t.combo[0], t.odds
+    else:
+        cands = [(win[x] * wo[f"{x:02d}"], x) for x in win if win[x] >= EVERY_PMIN and wo.get(f"{x:02d}")]
+        if cands:
+            mark, u = "○", max(cands)[1]
+            o = wo[f"{u:02d}"]
+        else:
+            mark, u, o = "－", fav, wo.get(f"{fav:02d}")
+    return dict(mark=mark, umaban=u, prob=win[u], odds=o, ev=(win[u] * o) if o else None, fav=fav,
+                fav_prob=win[fav], fuku=fav if win[fav] >= HIT_BUY else None, skip=skip,
+                exotic=[t for k in ("ワイド", "馬単") for t in vb.get(k, [])][:3])

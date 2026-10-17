@@ -33,6 +33,8 @@ h1, h2, h3 { margin: 0.2rem 0 0.4rem 0 !important; }
 div[data-testid="stPills"] button { min-height: 38px; font-size: 15px; padding: 2px 10px; }
 .st-key-venuegrid button { padding: 4px 2px !important; min-height: 74px; line-height: 1.3; white-space: normal !important; }
 .st-key-venuegrid button p { font-size: 12px !important; }
+.st-key-planlist button { justify-content:flex-start !important; }
+.st-key-planlist button p { text-align:left; font-size:0.9rem; }
 .tk { display:flex; justify-content:space-between; align-items:center; padding:6px 9px; margin:4px 0;
       background:#fff; color:#111827; border:1px solid #d9e2dc; border-radius:6px; font-size:0.93rem; }
 .tk .cmb { font-weight:900; font-size:1.03rem; }
@@ -46,6 +48,11 @@ div[data-testid="stPills"] button { min-height: 38px; font-size: 15px; padding: 
 .fm-sub { font-size:0.78rem; color:#52605a; }
 .judge { background:#1b5e3a; color:#fff; border-radius:8px; padding:10px 12px; margin:6px 0; }
 .stApp { background:#f3f5f2; color:#111827; }
+.bet { background:#fff; color:#111827; border:2px solid #1d4ed8; border-radius:10px; padding:10px 12px; margin:8px 0; }
+.bt-label { display:inline-block; color:#fff; border-radius:6px; padding:2px 8px; font-weight:800; font-size:0.82rem; }
+.bt-main { font-size:1.45rem; font-weight:900; margin:6px 0 2px 0; }
+.bt-sub { font-size:0.88rem; color:#374151; }
+.bt-why { font-size:0.76rem; color:#6b7280; margin-top:4px; }
 .judge .h { font-size:1.15rem; font-weight:900; }
 .judge .s { font-size:0.82rem; opacity:0.92; }
 .waku1{background:#fff;color:#000;border:1px solid #999} .waku2{background:#222;color:#fff} .waku3{background:#dc2626;color:#fff}
@@ -104,6 +111,23 @@ def next_kaisai_date(today: dt.date):
             if d >= today.strftime("%Y%m%d"):
                 return d
     return None
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def plan_one(race_id: str, date: str, _bucket: int):
+    """一覧用: 1レースの単勝のおすすめ (出馬表・馬柱・単勝オッズだけ取る。当日の馬場傾向は使わない)。"""
+    import features as F
+    race = load_race(race_id, date)
+    wo = scraper.fetch_odds(race_id, "win")
+    sm = statmodel.predict(race, wo or None)
+    if not sm:
+        return None
+    bands = strategy.race_bands(race.surface, race.heads, F.class_rank(" ".join([race.cls, race.grade, race.name])))
+    skip = strategy.skip_reason(race, bands)
+    rc = strategy.recommend(sm["probs"], {"win": wo}, (statmodel.load() or {}).get("value_policy"), bands, skip)
+    names = {h.umaban: h.name for h in race.horses}
+    return dict(mark=rc["mark"], umaban=rc["umaban"], name=names.get(rc["umaban"], ""), prob=rc["prob"], odds=rc["odds"],
+                ev=rc["ev"], fuku=rc["fuku"], skip=bool(skip), course=race.course)
 
 
 def waku_html(w: int) -> str:
@@ -167,6 +191,17 @@ if meta:
 else:
     st.caption("統計モデル未学習 (models/ なし)。馬柱の簡易レーティングで予想します。")
 
+with st.expander("この予想の見方"):
+    st.markdown("""
+- **単勝が基本**。各レースで「単勝のこの1頭」を出す。
+- **🟢 ◎ 勝負**: 勝率 × オッズ (期待値) が 1.1 以上の馬。市場が過小評価している。学習に使っていない2026年で 的中約10%・回収105%。
+- **🔵 ○ いつもの1頭**: ◎がいないレースで、勝率10%以上の中で期待値が最も高い馬。毎レース買うなら最も負けにくい選び方 (的中約23%・回収約91%)。
+- **複勝**: 本命の勝率が50%以上の堅いレースだけ、本命の複勝も出す (的中約89%・回収約97%)。
+- **⚠ 注意**: 新馬・未勝利・障害・材料の少ないレースは、予想の精度が低い。
+- オッズは発走直前まで動くので、買う前に「オッズ更新」で確かめる。どの買い方も控除率があり、利益は保証されない。
+- 勝率は、2015年からの約4万レース (JRA-VAN＋netkeiba) で学習した統計モデル (LightGBM) で計算する。JRA-VAN の調教タイム補正は規約上アプリには入れていない。
+""")
+
 ss = st.session_state
 ss.setdefault("race_date", now.date())
 ss.setdefault("auto_run", False)
@@ -217,7 +252,46 @@ if not meetings and not sched_error:
         if st.button(f"➡ {nd.strftime('%-m/%-d')} の開催を見る", use_container_width=True):
             ss.race_date = nd.date(); st.rerun()
 
-tab_grid, tab_time = st.tabs(["🏁 開催一覧", "⏰ 発走順"])
+tab_plan, tab_grid, tab_time = st.tabs(["📋 今日の買い目", "🏁 開催一覧", "⏰ 発走順"])
+with tab_plan:
+    st.markdown('<div class="note">全レースの「単勝のこの1頭」。🟢◎ = 勝負 (期待値買い) / 🔵○ = いつもの1頭 / ⚠ = 精度が低いレース。'
+                '押すと、そのレースの詳しい画面 (下) に移る。</div>', unsafe_allow_html=True)
+    all_races = sorted([(r, m) for m in meetings for r in m.races], key=lambda x: (x[0].start, x[1].venue))
+    if all_races and st.button("📋 全レースの買い目を出す (初回は1〜2分)", type="primary", use_container_width=True):
+        ss["plan_date"] = date_str
+    if all_races and ss.get("plan_date") == date_str:
+        bar = st.progress(0.0, text="全レースを計算中…")
+        bucket = int(time.time() // 300)
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        def _one(rid):
+            try:
+                return plan_one(rid, date_str, bucket)
+            except scraper.ScrapeError:
+                return None
+        got: dict = {}
+        with ThreadPoolExecutor(max_workers=4) as ex:
+            futs = {ex.submit(_one, r.race_id): r.race_id for r, _ in all_races}
+            for i, f in enumerate(as_completed(futs), 1):
+                got[futs[f]] = f.result()
+                bar.progress(i / len(all_races), text=f"全レースを計算中… {i}/{len(all_races)}")
+        out = [(r, m, got.get(r.race_id)) for r, m in all_races]
+        bar.empty()
+        n_maru = sum(1 for _, _, pp in out if pp and pp["mark"] == "◎")
+        st.caption(f"{len(out)}レース (◎ {n_maru}) / {dt.datetime.now(JST).strftime('%H:%M')} のオッズ。オッズは動くので、買う前に各レースで「オッズ更新」。")
+        plan_box = st.container(key="planlist")
+        for r, m, pp in out:
+            done = is_today and r.start < now_hm
+            if not pp:
+                lab = f"{r.start} {m.venue}{r.rno}R  — 取得できませんでした"
+            else:
+                icon = "🟢◎" if pp["mark"] == "◎" else ("⚠○" if pp["skip"] else "🔵○") if pp["mark"] == "○" else "⚪－"
+                o = f"・{pp['odds']}倍" if pp["odds"] else ""
+                fk = f"  \n複勝なら {pp['fuku']}番" if pp["fuku"] else ""
+                lab = (f"{icon} **{r.start} {m.venue}{r.rno}R** {pp['course']}{' (発走済)' if done else ''}  \n"
+                       f"単勝 **{pp['umaban']}番 {pp['name']}** (勝率{pp['prob']*100:.0f}%{o}){fk}")
+            plan_box.button(lab, key=f"pl_{r.race_id}", use_container_width=True, on_click=select_race, args=(m.venue, r.rno),
+                            disabled=pp is None)
 with tab_grid, st.container(key="venuegrid"):
     for row_start in range(0, len(VENUE_ORDER), 5):
         cols = st.columns(5, gap="small", wrap=False)
@@ -300,118 +374,85 @@ if res and res["race_id"] == (rs.race_id if rs else None):
     if getattr(race, "pre_draw", False):
         st.warning("枠順確定前のため、馬番は出馬表の掲載順の仮番号です。枠順が出たら (通常は前日) 予想し直してください。")
 
-    # --- 買い目: 単勝が基本。上位3頭が堅いレースだけ三連複も
+    # --- 買い目 (単勝が基本。strategy.recommend = picks.py --plan と同じ決め方)
     import features as F
     bands = strategy.race_bands(race.surface, race.heads, F.class_rank(" ".join([race.cls, race.grade, race.name])))
-    pol = value_policy or strategy.DEFAULT_VALUE_POLICY
-    tickets: dict = {}
     skip = strategy.skip_reason(race, bands)
+    rc = strategy.recommend(plan.win_probs, odds, value_policy, bands, skip)
+    names = {h.umaban: h.name for h in race.horses}
+    u = rc["umaban"]
+    label = {"◎": "勝負 (期待値買い)", "○": "いつもの1頭", "－": "オッズ未発売のため本命"}[rc["mark"]]
+    color = {"◎": "#15803d", "○": "#1d4ed8", "－": "#6b7280"}[rc["mark"]]
+    odds_txt = f"{rc['odds']}倍 ・ 期待値 {rc['ev']:.2f}" if rc["odds"] else "オッズ未発売"
+    why = {"◎": "勝率 × オッズ が基準 (1.1) 以上。市場が過小評価している馬。学習外の2026年: 的中約10%・回収105%。",
+           "○": "基準を超える馬がいないので、勝率10%以上の中で期待値が最も高い馬。学習外: 的中約23%・回収約91%。",
+           "－": "オッズが出たら「オッズ更新」で選び直す。"}[rc["mark"]]
+    fuku_html = ""
+    if rc["fuku"]:
+        fuku_html = (f'<div class="bt-sub" style="margin-top:6px;">本命が堅いレース: 複勝なら <b>{rc["fuku"]}番 {names.get(rc["fuku"], "")}</b> '
+                     f'(3着内 {plan.place_probs.get(rc["fuku"], 0)*100:.0f}%。学習外: 的中約89%・回収約97%)</div>')
+    st.markdown(f"""
+    <div class="bet" style="border-color:{color};">
+      <div class="bt-label" style="background:{color};">{rc['mark']} {label}</div>
+      <div class="bt-main">単勝 {u}番 {names.get(u, '')}</div>
+      <div class="bt-sub">勝率 {rc['prob']*100:.0f}% ・ {odds_txt}</div>
+      <div class="bt-why">{why}</div>{fuku_html}
+    </div>""", unsafe_allow_html=True)
     if skip:
-        st.error(f"⚠️ このレースは見送り推奨: {skip}。買わないほうが無難です。")
-    if race.surface == "障":
-        st.warning("障害レースは学習の対象外 (芝・ダートのみで学習) のため、勝率と買い目は参考値です。")
-
-    def show(ts):
-        for t in ts:
-            good = " good" if (t.ev or 0) >= 1.0 else ""
-            meta_t = f"{t.prob*100:.1f}%" + (f" / {t.odds:.1f}倍 / 期待値 {t.ev:.2f}" if t.odds else " / オッズ未発売")
-            name = next((h.name for h in race.horses if h.umaban == t.combo[0]), "") if t.kind == "単勝" else ""
-            st.markdown(f'<div class="tk{good}"><span class="cmb">{t.kind} {t.label} {name}</span><span class="meta">{meta_t}</span></div>',
-                        unsafe_allow_html=True)
-
-    st.markdown('<div class="sec">単勝</div>', unsafe_allow_html=True)
-    if not has_odds:
-        u0 = ranked[0].umaban
-        tan = [strategy.Ticket("単勝", (u0,), plan.win_probs.get(u0, 0), None)]
-        st.markdown('<div class="note">オッズ未発売のため、ひとまず勝率1位の単勝を出す。発売後に「オッズ更新」を押すと期待値で選び直す。</div>',
-                    unsafe_allow_html=True)
-    else:
-        vb = strategy.value_bets(plan.win_probs, odds, value_policy, bands)
-        tan = vb.get("単勝", [])
-        rule = pol["policy"].get("単勝") or {}
-        if tan:
-            st.markdown(f'<div class="note"><b>勝負</b>: 期待値 (勝率 × オッズ) が {rule.get("threshold", 1.3):.1f} 以上の馬。市場が過小評価している馬を買う。</div>',
-                        unsafe_allow_html=True)
-            tv = (value_policy or {}).get("test") or {}
-            if tv.get("bets"):
-                st.markdown(f'<div class="note">この買い方の検証 ({value_policy["test_period"][0][:4]}年・学習に使っていない {value_policy["races_test"]:,}レース): '
-                            f'{tv["bets"]:,}点 的中率 {tv["hit_rate"]*100:.0f}% / 回収率 {tv["roi"]*100:.0f}% (1点100円)</div>', unsafe_allow_html=True)
-        else:
-            ns = strategy.noskip_bets(plan.win_probs, odds, "単勝 上位1点", (value_policy or {}).get("pmin"))
-            tan = [t for t in ns if t.kind == "単勝"][:1]
-            why = ("このレース区分 (新馬・未勝利) は検証で期待値買いの成績が悪い" if any(bands.get(c) == v for c, v in rule.get("exclude", []))
-                   else "期待値が下限を超える馬がいない")
-            st.markdown(f'<div class="note">{why}ため、見送らずに期待値が最も高い馬を1点 (勝負度は低め)。</div>', unsafe_allow_html=True)
-            nsv = ((value_policy or {}).get("noskip") or {}).get("test") or {}
-            if nsv.get("bets"):
-                st.markdown(f'<div class="note">この買い方の検証 ({value_policy["test_period"][0][:4]}年 {nsv["races"]:,}レース全部): 的中率 {nsv["hit_rate"]*100:.0f}% / 回収率 {nsv["roi"]*100:.0f}%</div>',
-                            unsafe_allow_html=True)
-    show(tan)
-    tickets["単勝"] = tan
-
-    # 三連複: 上位3頭の勝率合計が基準以上の「カチカチに固い」レースだけ
-    trio_rule = (statmodel.load() or {}).get("trio") or {}
-    th = float(trio_rule.get("top3sum_min", 0.85))
-    t1 = float(trio_rule.get("top1_min", 0.50))
-    k = int(trio_rule.get("k", 2))
-    probs_sorted = sorted(plan.win_probs.values(), reverse=True)
-    top1p, top3sum = probs_sorted[0], sum(probs_sorted[:3])
-    if top1p >= t1 and top3sum >= th:
-        trio = strategy.trio_top(plan.win_probs, odds, k)
-        sm = strategy.summarize(trio)
-        ev_txt = f" / 期待回収率 {sm['ev']*100:.0f}%" if sm["ev"] else ""
-        st.markdown('<div class="sec">三連複 (カチカチに固いレース)</div>', unsafe_allow_html=True)
-        st.markdown(f'<div class="fm-card"><div class="fm-title">三連複フォーメーション ({len(trio)}点)</div>'
-                    f'<div class="fm-text">{strategy.exact_formation("三連複", [t.combo for t in trio]).replace(" / ", "<br>")}</div>'
-                    f'<div class="fm-sub">的中率 {sm["hit"]*100:.0f}%{ev_txt} / 本命の勝率 {top1p*100:.0f}% (基準 {t1*100:.0f}%) ・上位3頭の合計 {top3sum*100:.0f}% (基準 {th*100:.0f}%)</div></div>',
-                    unsafe_allow_html=True)
-        if trio_rule.get("test"):
-            st.markdown(f'<div class="note">検証 (確率の高い順に{k}点・実際の払戻で答え合わせ): 2025年 回収率 {trio_rule["fit"]["roi"]*100:.0f}% 的中率 {trio_rule["fit"]["hit"]*100:.0f}% / '
-                        f'2026年 回収率 {trio_rule["test"]["roi"]*100:.0f}% 的中率 {trio_rule["test"]["hit"]*100:.0f}%。当てにいく補助の買い方で、利益の柱は単勝。</div>',
-                        unsafe_allow_html=True)
-        show(trio)
-        tickets["三連複"] = trio
-    else:
-        st.markdown(f'<div class="note">三連複: 本命の勝率 {top1p*100:.0f}% (基準 {t1*100:.0f}%)・上位3頭の合計 {top3sum*100:.0f}% (基準 {th*100:.0f}%)。'
-                    'カチカチ (本命が圧倒的で相手も絞れている) ではないので出さない。</div>', unsafe_allow_html=True)
+        st.warning(f"注意: {skip}。予想の精度が低いレースなので、買うなら少額で。")
+    tickets = {"単勝": [strategy.Ticket("単勝", (u,), rc["prob"], rc["odds"])]}
+    if rc["fuku"]:
+        tickets["複勝"] = [strategy.Ticket("複勝", (rc["fuku"],), plan.place_probs.get(rc["fuku"], 0),
+                                          strategy._odds_of(odds.get("place", {}), (rc["fuku"],)))]
     plan.tickets = tickets
-    total = sum(len(v) for v in tickets.values())
-    st.markdown(f'<div class="note">合計 {total}点 (1点100円で {total*100:,}円)。同額で買う。賭け金を増やすと自分でオッズを下げて優位が消えるため 1点1,000円程度まで。緑枠は期待値1.0超。</div>',
-                unsafe_allow_html=True)
 
     b1, b2 = st.columns(2, wrap=False)
-    if res.get("saved"):
-        b1.success(f"台帳に保存済み #{res['saved']}")
-    elif b1.button("📒 台帳に保存", use_container_width=True):
-        res["saved"] = ledger.save_prediction(race, plan, f"{est['engine']}/{mode}"); st.rerun()
-    if b2.button("🔄 オッズ更新", use_container_width=True):
+    if b1.button("🔄 オッズ更新", use_container_width=True):
         load_odds.clear()
         odds = load_odds(race.race_id, int(time.time()))
         est, plan = run_prediction(race, odds, style)
         res.update(odds=odds, est=est, plan=plan, at=dt.datetime.now(JST).strftime("%H:%M")); st.rerun()
+    if res.get("saved"):
+        b2.success(f"台帳に保存済み #{res['saved']}")
+    elif b2.button("📒 台帳に保存", use_container_width=True):
+        res["saved"] = ledger.save_prediction(race, plan, f"{est['engine']}/{rc['mark']}"); st.rerun()
+    st.markdown('<div class="note">オッズは発走直前まで動く。買う前 (発走10〜30分前) に「オッズ更新」を押して、買い目が変わらないか確かめる。</div>',
+                unsafe_allow_html=True)
 
-    # --- 印・勝率
-    st.markdown('<div class="sec">印・推定勝率</div>', unsafe_allow_html=True)
+    # --- 全馬の勝率
+    st.markdown('<div class="sec">全馬の勝率</div>', unsafe_allow_html=True)
     info = statmodel.horse_info(race) if statmodel.available() else {}
-    rows = []
+    rows, rows_d = [], []
     for h in ranked:
-        u = h.umaban
-        p = plan.win_probs.get(u, 0)
-        o = odds.get("win", {}).get(f"{u:02d}")
-        hi = info.get(u, {})
+        hu = h.umaban
+        p = plan.win_probs.get(hu, 0)
+        o = odds.get("win", {}).get(f"{hu:02d}")
+        hi = info.get(hu, {})
         jn, jw = hi.get("jockey_form", (0, 0))
-        rows.append({"印": plan.marks.get(u, ""), "馬番": u, "馬名": h.name, "勝率": f"{p*100:.1f}%",
-                     "3着内": f"{plan.place_probs.get(u, 0)*100:.0f}%", "単勝": f"{o:.1f}" if o else "-",
-                     "期待値": f"{p*o:.2f}" if o else "-",
-                     "調教": f"{h.oik_rank} {h.oik_critic}".strip() or "-",
-                     "騎手": h.jockey, "騎手60日": f"{jw}/{jn}" if jn else "-",
-                     "父系統": hi.get("sire_line") or "-", "母父系統": hi.get("damsire_line") or "-",
-                     "根拠": " / ".join(est["notes"].get(u, []))})
+        mk = "◎" if hu == u and rc["mark"] == "◎" else "○" if hu == u else ""
+        rows.append({"": mk, "馬番": hu, "馬名": h.name, "勝率": f"{p*100:.1f}%", "3着内": f"{plan.place_probs.get(hu, 0)*100:.0f}%",
+                     "単勝": f"{o:.1f}" if o else "-", "期待値": f"{p*o:.2f}" if o else "-"})
+        rows_d.append({"馬番": hu, "馬名": h.name, "調教": f"{h.oik_rank} {h.oik_critic}".strip() or "-", "騎手": h.jockey,
+                       "騎手60日": f"{jw}/{jn}" if jn else "-", "父系統": hi.get("sire_line") or "-",
+                       "母父系統": hi.get("damsire_line") or "-", "根拠": " / ".join(est["notes"].get(hu, []))})
     st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True,
-                 column_config={"馬番": st.column_config.NumberColumn(width="small"), "印": st.column_config.TextColumn(width="small")})
+                 column_config={"": st.column_config.TextColumn(width="small"), "馬番": st.column_config.NumberColumn(width="small")})
+    st.markdown('<div class="note">期待値 = 勝率 × 単勝オッズ。1.0 を超えると、市場が過小評価していると判断した馬。</div>', unsafe_allow_html=True)
+    with st.expander("詳しい情報 (調教・騎手・血統・根拠)"):
+        st.dataframe(pd.DataFrame(rows_d), hide_index=True, use_container_width=True)
+        if info.get("_form_asof"):
+            st.markdown(f'<div class="note">調教 = 追い切り評価 (A〜D と短評)。騎手60日 = 直近60日の 勝利/騎乗 ({info["_form_asof"]} まで)。系統は父・母父の父系。</div>',
+                        unsafe_allow_html=True)
+    if rc["exotic"]:
+        with st.expander("ワイド・馬単 (参考)"):
+            for t in rc["exotic"]:
+                sep = "→" if t.kind == "馬単" else "-"
+                st.markdown(f'<div class="tk"><span class="cmb">{t.kind} {sep.join(map(str, t.combo))}</span>'
+                            f'<span class="meta">確率 {t.prob*100:.1f}% / {t.odds:.1f}倍 / 期待値 {t.ev:.2f}</span></div>', unsafe_allow_html=True)
+            st.markdown('<div class="note">期待値1.5以上の組。学習外の2026年: ワイド 回収104%・馬単 回収109% (馬単の的中は1%台)。'
+                        '前日や朝のオッズでは期待値が高く出すぎるので、発走直前のオッズで確かめる。</div>', unsafe_allow_html=True)
     # --- コースの特徴 (過去データ)
     if statmodel.available() and race.surface in ("芝", "ダ"):
-        import features as F
         _m = statmodel.load()
         prof = F.course_profile(_m.get("display_stats") or _m["stats"], race.venue, race.surface, race.distance, race.condition)
         def cell(v):
@@ -420,27 +461,14 @@ if res and res["race_id"] == (rs.race_id if rs else None):
                 return "-"
             mark = " ◎" if r >= prof["base"] * 1.25 else " ×" if r <= prof["base"] * 0.75 else ""
             return f"{r*100:.1f}%{mark}" + (" (少)" if n < 150 else "")
-        rows_c = [
-            {"区分": "枠", **{k: cell(v) for k, v in prof["waku"].items()}},
-        ]
-        rows_s = [
-            {"区分": f"{race.venue}{race.course}", **{k: cell(v) for k, v in prof["style"].items()}},
-            {"区分": f"{race.surface} {'重・不良' if prof['wet'] == '重' else '良・稍重'}", **{k: cell(v) for k, v in prof["cond_style"].items()}},
-        ]
-        st.markdown(f'<div class="sec">コースの特徴 ({race.venue} {race.course}・馬場 {race.condition or "-"}・天候 {race.weather or "-"})</div>',
-                    unsafe_allow_html=True)
-        st.dataframe(pd.DataFrame(rows_c), hide_index=True, use_container_width=True)
-        st.dataframe(pd.DataFrame(rows_s), hide_index=True, use_container_width=True)
-        st.markdown(f'<div class="note">過去レースでの勝率 (平均 {prof["base"]*100:.1f}%)。◎ = 平均の1.25倍以上で有利、× = 0.75倍以下で不利、(少) = 件数が少なく参考程度。'
-                    '内枠 = 1〜3枠、中 = 4〜5枠、外 = 6〜8枠。脚質は各馬のふだんの脚質。</div>', unsafe_allow_html=True)
-
-    if info.get("_form_asof"):
-        st.markdown(f'<div class="note">調教 = 追い切り評価 (A〜D と短評)。騎手60日 = 直近60日の 勝利/騎乗 ({info["_form_asof"]} までのデータ)。系統は父・母父の父系。</div>',
-                    unsafe_allow_html=True)
-    if est["engine"] == "統計+市場補正":
-        st.markdown('<div class="note">勝率は市場 (単勝オッズ) を土台に、馬柱・血統・騎手・時計・展開の統計で補正し、補正のずれを検証で決めた比率に縮めたもの。期待値 = 勝率 × 単勝オッズで、1.0 超は市場が過小評価していると判断した馬。</div>', unsafe_allow_html=True)
-    else:
-        st.markdown('<div class="note">勝率は統計データのみから推定 (オッズ未発売のため市場補正なし)。期待値 = 勝率 × 単勝オッズ。</div>', unsafe_allow_html=True)
+        with st.expander(f"コースの特徴 ({race.venue} {race.course})"):
+            st.dataframe(pd.DataFrame([{"区分": "枠", **{k: cell(v) for k, v in prof["waku"].items()}}]), hide_index=True, use_container_width=True)
+            st.dataframe(pd.DataFrame([
+                {"区分": f"{race.venue}{race.course}", **{k: cell(v) for k, v in prof["style"].items()}},
+                {"区分": f"{race.surface} {'重・不良' if prof['wet'] == '重' else '良・稍重'}", **{k: cell(v) for k, v in prof["cond_style"].items()}},
+            ]), hide_index=True, use_container_width=True)
+            st.markdown(f'<div class="note">過去レースでの勝率 (平均 {prof["base"]*100:.1f}%)。◎ = 平均の1.25倍以上で有利、× = 0.75倍以下で不利、(少) = 件数が少なく参考程度。'
+                        '内枠 = 1〜3枠、中 = 4〜5枠、外 = 6〜8枠。</div>', unsafe_allow_html=True)
 
     with st.expander("出馬表・近5走・血統"):
         for h in race.horses:

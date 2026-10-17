@@ -29,8 +29,8 @@ import statmodel  # noqa: E402
 import strategy  # noqa: E402
 
 JST = dt.timezone(dt.timedelta(hours=9))
-EVERY_PMIN = 0.10   # 毎レース1頭買うときの候補 (勝率10%以上で期待値1位。2025〜2026年の学習外で 的中約23% 回収約91%)
-HIT_BUY, HIT_CAND = 0.50, 0.40   # 的中重視: 本命の勝率がこれ以上なら複勝で買う / 候補 (backtest/hit_first.py)
+EVERY_PMIN = strategy.EVERY_PMIN   # 毎レース1頭買うときの候補 (strategy.recommend)
+HIT_BUY, HIT_CAND = strategy.HIT_BUY, 0.40   # 的中重視: 本命の勝率がこれ以上なら複勝で買う / 候補 (backtest/hit_first.py)
 
 
 def main() -> None:
@@ -94,27 +94,16 @@ def main() -> None:
                 head = f"{m.venue}{r.rno:>2}R {getattr(r, 'start', '')} {race.surface}{race.distance}m"
                 fav = f"本命 {u}番{names.get(u, '')} 勝率{pw*100:.0f}% 3着内{pl*100:.0f}%" + (f" 単勝{ow}倍" if ow else "")
                 n_races += 1
-                vb = strategy.value_bets(sm["probs"], odds, pol, bands) if odds.get("win") and not skip else {}
-                tan = vb.get("単勝", [])
-                ex = [t for k in ("ワイド", "馬単") for t in vb.get(k, [])][:2]
-                # 毎レース1頭: 勝負 (期待値買い) が無ければ、勝率10%以上で期待値が一番高い馬 (学習外で回収 約91%)
-                win_odds = odds.get("win") or {}
-                cands = [(sm["probs"][x] * win_odds[f"{x:02d}"], x) for x in sm["probs"]
-                         if sm["probs"][x] >= EVERY_PMIN and win_odds.get(f"{x:02d}")]
-                if tan:
-                    t = tan[0]
-                    rec = f"◎単勝 {t.combo[0]}番{names.get(t.combo[0], '')} (勝率{t.prob*100:.0f}% {t.odds}倍 期待値{t.ev:.2f})"
-                elif cands:
-                    ev_, x = max(cands)
-                    rec = f"○単勝 {x}番{names.get(x, '')} (勝率{sm['probs'][x]*100:.0f}% {win_odds[f'{x:02d}']}倍 期待値{ev_:.2f})"
-                else:
-                    rec = f"○単勝 {u}番{names.get(u, '')} (オッズ未発売のため本命)"
+                rc = strategy.recommend(sm["probs"], odds, pol, bands, skip)
+                x = rc["umaban"]
+                rec = f"{rc['mark']}単勝 {x}番{names.get(x, '')} (勝率{rc['prob']*100:.0f}%" + (
+                    f" {rc['odds']}倍 期待値{rc['ev']:.2f})" if rc["odds"] else " オッズ未発売)")
                 n_buy += 1
                 extra = []
-                if pw >= HIT_BUY:
-                    extra.append(f"複勝なら {u}番 (3着内{pl*100:.0f}%)")
-                if ex:
-                    extra.append("参考 " + "、".join(f"{t.kind}{('→' if t.kind == '馬単' else '-').join(map(str, t.combo))}" for t in ex))
+                if rc["fuku"]:
+                    extra.append(f"複勝なら {rc['fuku']}番 (3着内{pl*100:.0f}%)")
+                if rc["exotic"]:
+                    extra.append("参考 " + "、".join(f"{t.kind}{('→' if t.kind == '馬単' else '-').join(map(str, t.combo))}" for t in rc["exotic"][:2]))
                 if skip:
                     extra.append("注意: " + (skip[:-3] if skip.endswith('のため') else skip.removesuffix('ため')))
                 print(f"{head} | {rec} | {fav}" + (f" | {' / '.join(extra)}" if extra else ""))
