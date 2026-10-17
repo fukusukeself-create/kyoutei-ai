@@ -3,6 +3,7 @@
     python picks.py              # 今日 (日本時間)
     python picks.py 20261011     # 日付指定
     python picks.py 20261011 --all   # 買い目なしのレースも、勝率1位と期待値最大の馬を表示
+    python picks.py 20261018 --plan  # レースごとのおすすめの賭け方を1行で (単勝が基本)
     python picks.py --soon 30        # 今日、発走30分以内のレースだけ (馬単・ワイドは直前のオッズで買う)
     python picks.py 20261011 --hit   # 的中重視: オッズを見ずに、本命の勝率が高いレースの本命を複勝で (モンテカルロで当たる数も)
 
@@ -36,13 +37,18 @@ def main() -> None:
     ap.add_argument("date", nargs="?", default=dt.datetime.now(JST).strftime("%Y%m%d"))
     ap.add_argument("--all", action="store_true")
     ap.add_argument("--soon", type=int, help="発走まで この分数以内のレースだけ (例 --soon 30。買う直前の出し直し用)")
+    ap.add_argument("--plan", action="store_true",
+                    help="レースごとのおすすめの賭け方を1行で (単勝が基本: 単勝の期待値買い → 本命の複勝 → 参考のワイド・馬単 → 見送り)")
     ap.add_argument("--hit", action="store_true", help="的中重視: オッズを見ずに、本命の勝率が高いレースの本命を複勝で買う")
     a = ap.parse_args()
     if not statmodel.available():
         sys.exit("統計モデルを読み込めません (pip install -r requirements.txt)")
     pol = (statmodel.load() or {}).get("value_policy")
     rule = ((pol or strategy.DEFAULT_VALUE_POLICY)["policy"].get("単勝") or {})
-    if a.hit:
+    if a.plan:
+        print(f"{a.date} レースごとのおすすめ (単勝が基本。単勝 期待値{rule.get('threshold', 1.1)}以上 → 本命の複勝 (勝率{HIT_BUY*100:.0f}%以上) → "
+              "参考のワイド・馬単 (期待値1.5以上) → 見送り)")
+    elif a.hit:
         print(f"{a.date} 的中重視: 本命の勝率 {HIT_BUY*100:.0f}%以上 → 複勝で買い / {HIT_CAND*100:.0f}%以上 → 候補 (オッズは見ない)")
     else:
         print(f"{a.date} 買い条件 (新馬・未勝利は除く): " + " / ".join(
@@ -75,6 +81,35 @@ def main() -> None:
                         n_work += 1
             except Exception as e:  # 1レースの失敗で全体を止めない
                 print(f"{m.venue}{r.rno}R 取得失敗: {e}")
+                continue
+            if a.plan and sm:
+                bands = strategy.race_bands(race.surface, race.heads, F.class_rank(" ".join([race.cls, race.grade, race.name])))
+                skip = strategy.skip_reason(race, bands)
+                names = {h.umaban: h.name for h in race.horses}
+                u = max(sm["probs"], key=sm["probs"].get)
+                pw = sm["probs"][u]
+                pl = mc.probs(sm["probs"], 20000)["place"].get(u, 0)
+                ow = (odds.get("win") or {}).get(f"{u:02d}")
+                head = f"{m.venue}{r.rno:>2}R {getattr(r, 'start', '')} {race.surface}{race.distance}m"
+                fav = f"本命 {u}番{names.get(u, '')} 勝率{pw*100:.0f}% 3着内{pl*100:.0f}%" + (f" 単勝{ow}倍" if ow else "")
+                n_races += 1
+                if skip:
+                    print(f"{head} | 見送り ({skip.removesuffix('ため')}) | {fav}")
+                    continue
+                vb = strategy.value_bets(sm["probs"], odds, pol, bands) if odds.get("win") else {}
+                tan = vb.get("単勝", [])
+                ex = [t for k in ("ワイド", "馬単") for t in vb.get(k, [])][:3]
+                if tan:
+                    rec = "単勝 " + "、".join(f"{t.combo[0]}番{names.get(t.combo[0], '')} (勝率{t.prob*100:.0f}% {t.odds}倍 期待値{t.ev:.2f})" for t in tan[:2])
+                    n_buy += len(tan[:2])
+                elif pw >= HIT_BUY:
+                    rec = f"複勝 {u}番{names.get(u, '')} (3着内{pl*100:.0f}%。本命が堅い)"
+                    n_buy += 1
+                elif ex:
+                    rec = "参考 " + "、".join(f"{t.kind} {('→' if t.kind == '馬単' else '-').join(map(str, t.combo))} (期待値{t.ev:.1f})" for t in ex)
+                else:
+                    rec = "見送り (期待値の高い馬がいない)"
+                print(f"{head} | {rec} | {fav}")
                 continue
             if a.hit and sm:
                 bands = strategy.race_bands(race.surface, race.heads, F.class_rank(" ".join([race.cls, race.grade, race.name])))
@@ -132,6 +167,10 @@ def main() -> None:
     print(f"調教タイム補正 (JRA-VAN): {n_work}レースに適用" if n_work else
           ("調教タイム補正: この日の調教データが無いので未適用 (jravan/load_weekly.py で取り込む)" if wk else
            "調教タイム補正: 調教データ未取り込み (data/jv_private) のため未適用"))
+    if a.plan:
+        print("※ オッズは発走前に動く。単勝・ワイド・馬単は発走10〜30分前に `picks.py --soon 30 --plan` で出し直して、残ったものだけ買う。"
+              "ワイド・馬単は的中率が低く (馬単は1%台)、参考扱い。")
+        return
     if a.hit:
         import numpy as np
         rng = np.random.default_rng(0)
