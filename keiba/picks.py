@@ -29,6 +29,7 @@ import statmodel  # noqa: E402
 import strategy  # noqa: E402
 
 JST = dt.timezone(dt.timedelta(hours=9))
+EVERY_PMIN = 0.10   # 毎レース1頭買うときの候補 (勝率10%以上で期待値1位。2025〜2026年の学習外で 的中約23% 回収約91%)
 HIT_BUY, HIT_CAND = 0.50, 0.40   # 的中重視: 本命の勝率がこれ以上なら複勝で買う / 候補 (backtest/hit_first.py)
 
 
@@ -46,8 +47,8 @@ def main() -> None:
     pol = (statmodel.load() or {}).get("value_policy")
     rule = ((pol or strategy.DEFAULT_VALUE_POLICY)["policy"].get("単勝") or {})
     if a.plan:
-        print(f"{a.date} レースごとのおすすめ (単勝が基本。単勝 期待値{rule.get('threshold', 1.1)}以上 → 本命の複勝 (勝率{HIT_BUY*100:.0f}%以上) → "
-              "参考のワイド・馬単 (期待値1.5以上) → 見送り)")
+        print(f"{a.date} 全レースの単勝 (◎勝負: 期待値{rule.get('threshold', 1.1)}以上・新馬未勝利除く=学習外2026年 回収105% 的中約10% / "
+              f"○いつもの1頭: 勝率{EVERY_PMIN*100:.0f}%以上で期待値1位=学習外 回収約91% 的中約23%)")
     elif a.hit:
         print(f"{a.date} 的中重視: 本命の勝率 {HIT_BUY*100:.0f}%以上 → 複勝で買い / {HIT_CAND*100:.0f}%以上 → 候補 (オッズは見ない)")
     else:
@@ -93,23 +94,30 @@ def main() -> None:
                 head = f"{m.venue}{r.rno:>2}R {getattr(r, 'start', '')} {race.surface}{race.distance}m"
                 fav = f"本命 {u}番{names.get(u, '')} 勝率{pw*100:.0f}% 3着内{pl*100:.0f}%" + (f" 単勝{ow}倍" if ow else "")
                 n_races += 1
-                if skip:
-                    print(f"{head} | 見送り ({skip.removesuffix('ため')}) | {fav}")
-                    continue
-                vb = strategy.value_bets(sm["probs"], odds, pol, bands) if odds.get("win") else {}
+                vb = strategy.value_bets(sm["probs"], odds, pol, bands) if odds.get("win") and not skip else {}
                 tan = vb.get("単勝", [])
-                ex = [t for k in ("ワイド", "馬単") for t in vb.get(k, [])][:3]
+                ex = [t for k in ("ワイド", "馬単") for t in vb.get(k, [])][:2]
+                # 毎レース1頭: 勝負 (期待値買い) が無ければ、勝率10%以上で期待値が一番高い馬 (学習外で回収 約91%)
+                win_odds = odds.get("win") or {}
+                cands = [(sm["probs"][x] * win_odds[f"{x:02d}"], x) for x in sm["probs"]
+                         if sm["probs"][x] >= EVERY_PMIN and win_odds.get(f"{x:02d}")]
                 if tan:
-                    rec = "単勝 " + "、".join(f"{t.combo[0]}番{names.get(t.combo[0], '')} (勝率{t.prob*100:.0f}% {t.odds}倍 期待値{t.ev:.2f})" for t in tan[:2])
-                    n_buy += len(tan[:2])
-                elif pw >= HIT_BUY:
-                    rec = f"複勝 {u}番{names.get(u, '')} (3着内{pl*100:.0f}%。本命が堅い)"
-                    n_buy += 1
-                elif ex:
-                    rec = "参考 " + "、".join(f"{t.kind} {('→' if t.kind == '馬単' else '-').join(map(str, t.combo))} (期待値{t.ev:.1f})" for t in ex)
+                    t = tan[0]
+                    rec = f"◎単勝 {t.combo[0]}番{names.get(t.combo[0], '')} (勝率{t.prob*100:.0f}% {t.odds}倍 期待値{t.ev:.2f})"
+                elif cands:
+                    ev_, x = max(cands)
+                    rec = f"○単勝 {x}番{names.get(x, '')} (勝率{sm['probs'][x]*100:.0f}% {win_odds[f'{x:02d}']}倍 期待値{ev_:.2f})"
                 else:
-                    rec = "見送り (期待値の高い馬がいない)"
-                print(f"{head} | {rec} | {fav}")
+                    rec = f"○単勝 {u}番{names.get(u, '')} (オッズ未発売のため本命)"
+                n_buy += 1
+                extra = []
+                if pw >= HIT_BUY:
+                    extra.append(f"複勝なら {u}番 (3着内{pl*100:.0f}%)")
+                if ex:
+                    extra.append("参考 " + "、".join(f"{t.kind}{('→' if t.kind == '馬単' else '-').join(map(str, t.combo))}" for t in ex))
+                if skip:
+                    extra.append("注意: " + (skip[:-3] if skip.endswith('のため') else skip.removesuffix('ため')))
+                print(f"{head} | {rec} | {fav}" + (f" | {' / '.join(extra)}" if extra else ""))
                 continue
             if a.hit and sm:
                 bands = strategy.race_bands(race.surface, race.heads, F.class_rank(" ".join([race.cls, race.grade, race.name])))
@@ -168,8 +176,8 @@ def main() -> None:
           ("調教タイム補正: この日の調教データが無いので未適用 (jravan/load_weekly.py で取り込む)" if wk else
            "調教タイム補正: 調教データ未取り込み (data/jv_private) のため未適用"))
     if a.plan:
-        print("※ オッズは発走前に動く。単勝・ワイド・馬単は発走10〜30分前に `picks.py --soon 30 --plan` で出し直して、残ったものだけ買う。"
-              "ワイド・馬単は的中率が低く (馬単は1%台)、参考扱い。")
+        print("※ オッズは発走前に動くので、発走10〜30分前に `picks.py --soon 30 --plan` で出し直す。"
+              "○は毎レース買う前提の1頭で、続けると平均では少し負ける (控除率のため)。ワイド・馬単は的中率が低く参考扱い。")
         return
     if a.hit:
         import numpy as np
