@@ -71,8 +71,10 @@ def main() -> None:
                 u = max(sm["probs"], key=sm["probs"].get)
                 pw = sm["probs"][u]
                 head = f"{m.venue}{r.rno}R {r.start if hasattr(r, 'start') else ''} {race.surface}{race.distance}m"
+                name_u = next((h.name for h in race.horses if h.umaban == u), "")
                 if skip:
-                    print(f"  見送り推奨 {head}: {skip}")
+                    pl = mc.probs(sm["probs"], 20000)["place"].get(u, 0)
+                    print(f"  見送り推奨 {head}  (参考の本命 {u}番 {name_u} 勝率{pw*100:.0f}% 3着内{pl*100:.0f}%): {skip}")
                     continue
                 n_races += 1
                 pl = mc.probs(sm["probs"], 20000)["place"].get(u, 0)
