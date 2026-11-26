@@ -316,6 +316,27 @@ def trifecta_probs(X, courses, jcd, w):
     return P
 
 
+# 荒れ度の目安。「モデルの確率上位12点の合計」と、実際に万舟券（3連単1万円以上）になった割合の関係。
+# 直近60日・8,960レースの実績（全体の万舟率は16%）。上位に確率が集まらないレースほど荒れやすい。
+UPSET_TABLE = [(0.30, 0.25), (0.40, 0.195), (0.50, 0.186), (0.60, 0.159), (0.70, 0.111), (0.80, 0.06)]
+
+
+def upset_level(P) -> dict:
+    """そのレースがどのくらい荒れそうか。万舟になる確率の目安と、荒れそう / ふつう / 堅そう の区分。"""
+    probs = np.sort(np.asarray(P, dtype=float).ravel())[::-1]
+    top12 = float(probs[:12].sum())
+    xs = [x for x, _ in UPSET_TABLE]
+    ys = [y for _, y in UPSET_TABLE]
+    man = float(np.interp(top12, xs, ys))
+    if top12 < 0.45:
+        label = "荒れそう"
+    elif top12 >= 0.65:
+        label = "堅そう"
+    else:
+        label = "ふつう"
+    return {"label": label, "manshu_prob": man, "top12": top12}
+
+
 def predict(race, use_preview=True, weights=None):
     """レース辞書から予想結果を作る。
 

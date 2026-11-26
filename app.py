@@ -52,6 +52,11 @@ st.markdown("""
 .fm-head { display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; }
 .fm-tag { background:#0066cc; color:#fff; font-weight:900; padding:2px 12px; border-radius:999px; font-size:0.95rem; }
 .fm.sub .fm-tag { background:#f59e0b; color:#111; }
+.fm.hole { border-color:#7c3aed; border-style:dashed; }
+.fm.hole .fm-tag { background:#7c3aed; color:#fff; }
+.upset { border-radius:10px; padding:10px 12px; margin-bottom:10px; font-size:0.92rem; border:1.5px solid #cbd5e1; background:#fff; color:#0f172a; }
+.upset.hot { border-color:#7c3aed; background:#f5f3ff; }
+.upset.calm { border-color:#16a34a; background:#f0fdf4; }
 .fm-pts { font-weight:900; font-size:1.05rem; }
 .fm-pts small { font-weight:600; color:#475569; font-size:0.75rem; }
 .fm-grid { display:flex; align-items:stretch; gap:4px; }
@@ -135,11 +140,15 @@ def fnum(v, fmt="{:.2f}", none="-"):
 
 def formation_card(card, sub=False, show_prob=True):
     f = card["formation"]
+    kind = "hole" if card["label"].startswith("穴") else ("sub" if sub else "")
     names = "・".join
     how = (f"1着に <b>{names(map(str, f['first']))}</b>、2着に <b>{names(map(str, f['second']))}</b>、"
            f"3着に <b>{names(map(str, f['third']))}</b> をマーク")
-    dup = f"（本線と重なる{card['dups']}点は除く）" if card.get("dups") else ""
-    prob = f"　<small>当たる見込み 約{card['prob'] * 100:.0f}%</small>" if show_prob and card.get("prob") is not None else ""
+    dup = f"（すでに買う{card['dups']}点は除く）" if card.get("dups") else ""
+    prob = ""
+    if show_prob and card.get("prob") is not None:
+        pct = card["prob"] * 100
+        prob = f"　<small>当たる見込み 約{pct:.0f}%</small>" if pct >= 10 else f"　<small>当たる見込み 約{pct:.1f}%</small>"
     tickets = ""
     for t in card["tickets"]:
         extra = []
@@ -150,7 +159,7 @@ def formation_card(card, sub=False, show_prob=True):
         tickets += f'<span class="tk">{ticket_html(t["ticket"])} <small>{" / ".join(extra)}</small></span>'
     reason = f'<div class="fm-reason">💬 {esc(card["reason"])}</div>' if card.get("reason") else ""
     return f"""
-<div class="fm{' sub' if sub else ''}">
+<div class="fm {kind}">
   <div class="fm-head"><span class="fm-tag">{esc(card['label'])}</span>
     <span class="fm-pts">3連単 {card['points']}点 <small>{card['points'] * 100:,}円(1点100円){prob}</small></span></div>
   <div class="fm-grid">
@@ -164,6 +173,36 @@ def formation_card(card, sub=False, show_prob=True):
   {reason}
   <details style="margin-top:6px;"><summary class="note">買い目を1点ずつ見る（{card['points']}点）</summary>
   <div style="margin-top:4px;">{tickets}</div></details>
+</div>"""
+
+
+def tickets_card(card):
+    """1点ずつ買う買い目（穴）のカード。"""
+    pct = (card.get("prob") or 0) * 100
+    rows = ""
+    for t in card["tickets"]:
+        odds_txt = f"<b>{t['odds']:.0f}倍</b>" if t.get("odds") else "オッズ未発売"
+        pay = f"（100円が約{t['odds'] * 100:,.0f}円）" if t.get("odds") else ""
+        rows += (f'<div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid #ede9fe;">'
+                 f'<span style="font-size:1.1rem;">{chips(t["ticket"].split("-"))}</span>'
+                 f'<span style="font-size:0.85rem;">{odds_txt} <small>{pay}</small></span>'
+                 f'<span class="note" style="margin-left:auto;">見込み {t["prob"] * 100:.1f}%</span></div>')
+    reason = f'<div class="fm-reason">💬 {esc(card["reason"])}</div>' if card.get("reason") else ""
+    # オッズ（世間の評価）から逆算した当たる見込み。払戻率75%なので 1点の見込み ≒ 0.75 ÷ オッズ
+    market = sum(0.75 / t["odds"] for t in card["tickets"] if t.get("odds")) * 100
+    if market and all(t.get("odds") for t in card["tickets"]):
+        chance = (f"どれかが当たる見込み：データ予想では <b>約{pct:.1f}%</b>、オッズから逆算すると <b>約{market:.1f}%</b>。"
+                  f"実際はその間くらいと見てください（{100 / max((pct + market) / 2, 0.1):.0f}回に1回ほど）。")
+    else:
+        chance = f"どれかが当たる見込み：データ予想では <b>約{pct:.1f}%</b>。"
+    return f"""
+<div class="fm hole">
+<div class="fm-head" style="flex-wrap:wrap;gap:6px;"><span class="fm-tag" style="white-space:nowrap;">{esc(card['label'])}</span>
+<span class="fm-pts">3連単 {card['points']}点 <small>{card['points'] * 100:,}円(1点100円)</small></span></div>
+{rows}
+<div class="note" style="margin-top:8px;">{chance}</div>
+<div class="fm-how">📝 買い方: 3連単の<b>「通常」</b>（1点ずつ選ぶ方式）で、上の {card['points']}点を1着・2着・3着の順にマーク</div>
+{reason}
 </div>"""
 
 
@@ -467,8 +506,18 @@ else:
         cards = analysis["cards"]
         source_label = "📊 データ予想（統計AI）"
 
+    # 穴（万舟狙い）は本線・抑えとは別枠。AIが出していればそれ、無ければデータ予想の穴
+    bought = [tuple(map(int, t["ticket"].split("-"))) for c in cards for t in c["tickets"]]
+    if ai_result:
+        ai_hole = ai_result.get("hole") or {}
+        hole = (service.hole_card(pred["P"], odds, bought, ai_hole.get("tickets"), ai_hole.get("reason", ""))
+                if ai_hole.get("tickets") else service.hole_card(pred["P"], odds, bought))
+    else:
+        hole = analysis["hole"]
+    upset = analysis["upset"]
+
     if result:
-        hit = service.check_hit(cards, result["top3"])
+        hit = service.check_hit(cards + ([hole] if hole else []), result["top3"])
         res_txt = (f"結果 {ticket_html('-'.join(map(str, result['top3'])))} "
                    f"{esc(result.get('technique', ''))}　3連単 {result['payout']:,}円" if result.get("payout")
                    else f"結果 {ticket_html('-'.join(map(str, result['top3'])))}")
@@ -491,6 +540,31 @@ else:
 どれかが当たる見込み <b>約{total_prob * 100:.0f}%</b>
 <div class="note">見込みは過去レースの統計から計算した目安です。1点ごとの％は「買い目を1点ずつ見る」で確認できます。</div></div>""")
 
+    # ---------- 荒れ度と穴 ----------
+    cls = {"荒れそう": "hot", "堅そう": "calm"}.get(upset["label"], "")
+    advice = {
+        "荒れそう": "上位人気で決まりにくい顔ぶれです。本線の信頼度は低め。高配当を狙うなら下の「穴」を少額で足す手があります。",
+        "堅そう": "力の差がはっきりしていて、荒れにくいレースです。穴は狙わず本線中心が向いています。",
+    }.get(upset["label"], "平均的なレースです。穴を足すかどうかはお好みで。")
+    ai_upset = f"<div style='margin-top:6px;'>🤖 {esc(ai_result['upset'])}</div>" if ai_result and ai_result.get("upset") else ""
+    show_html(f"""<div class="upset {cls}"><b>🌊 荒れ度：{esc(upset['label'])}</b>　
+万舟券（1万円以上）になる見込み <b>約{upset['manshu_prob'] * 100:.0f}%</b> <small>（全レース平均は16%）</small>
+<div class="note" style="margin-top:4px;">{advice}</div>{ai_upset}</div>""")
+    if hole:
+        hole = dict(hole, label="穴（万舟狙い）")
+        basis = {"odds": "オッズ100倍以上の買い目だけから、来る可能性が高い順に選んでいます。",
+                 "ai": "AIが、展開が崩れた時に来そうな高配当を選んでいます。",
+                 "rank": "オッズがまだ無いため、人気になりにくい組合せから選んでいます（発売が始まると100倍以上だけに絞ります）。"}[hole.get("basis", "odds")]
+        note = (f"本線・抑えとは<b>別に足す</b>買い目です（最大{formation.HOLE_POINTS}点＝800円まで）。{basis}"
+                f"めったに当たりませんが、当たれば高配当です。買わなくても構いません。")
+        if upset["label"] == "荒れそう":
+            show_html(tickets_card(hole))
+            show_html(f'<div class="note" style="margin:-6px 0 10px 0;">{note}</div>')
+        else:
+            with st.expander(f"穴（万舟狙い）の買い目も見る（追加 {hole['points']}点）"):
+                show_html(tickets_card(hole))
+                show_html(f'<div class="note">{note}</div>')
+
     with st.expander("❓ フォーメーションの読み方・買い方"):
         st.markdown("""
 **フォーメーション**は「1着に来そうな艇」「2着に来そうな艇」「3着に来そうな艇」をそれぞれ選んで、まとめて買う方法です。
@@ -505,6 +579,9 @@ else:
 4. 表示された点数がこの画面の点数と同じことを確認して、1点あたりの金額を入れる
 
 **本線**は一番ありそうな展開、**抑え**は本線が崩れた時のための保険です。両方買うのが基本ですが、予算が少ない時は本線だけでも構いません。
+
+**穴（万舟狙い）**は、100円が1万円以上になる買い目だけを少しだけ足すものです。当たるのは20〜30回に1回ほどなので、
+「荒れ度」が「荒れそう」の時だけ、無くなってもいい金額で足すのがおすすめです。
 """)
 
     # ---------- 展開 ----------

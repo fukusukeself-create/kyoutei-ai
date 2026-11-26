@@ -148,11 +148,21 @@ def build_race_text(race, analysis, original=None, stadium=None, trend=None, odd
         L.append("\n■3連単オッズ 人気順（参考。売れている順）")
         L.append(" ".join(f"{k}:{v:.1f}倍" for k, v in top))
 
+    upset = analysis.get("upset")
+    if upset:
+        L.append(f"\n■荒れ度（過去の統計）: {upset['label']}。このタイプのレースが万舟券(3連単100倍以上)で決まる割合は約{upset['manshu_prob'] * 100:.0f}%（全レース平均16%）")
+    if odds:
+        cand = sorted(((p, t) for p, t in pred["trifecta"] if (odds.get("-".join(map(str, t))) or 0) >= formation.HOLE_MIN_ODDS),
+                      reverse=True)[:15]
+        if cand:
+            L.append("■穴候補（オッズ100倍以上のうち、モデルの確率が高い順）")
+            L.append(" ".join(f"{a}-{b}-{c}:{odds['-'.join(map(str, (a, b, c)))]:.0f}倍({p * 100:.1f}%)" for p, (a, b, c) in cand))
+
     L.append(f"\n■データ予想モデル（過去約6万レースから学習。{'展示込み' if pred['mode'] == 'live' else '出走表のみ'}）")
     for i, b in enumerate(race["boats"]):
         L.append(f"{b['boat']}号艇: 1着{pred['win'][i] * 100:.1f}% 2連対{pred['top2'][i] * 100:.1f}% 3連対{pred['top3'][i] * 100:.1f}%")
     L.append("3連単の確率上位: " + " ".join(f"{a}-{b}-{c}:{p * 100:.1f}%" for p, (a, b, c) in pred["trifecta"][:15]))
-    for card in analysis["cards"]:
+    for card in analysis["cards"] + ([analysis["hole"]] if analysis.get("hole") else []):
         L.append(f"モデルの{card['label']}: {card['text']}（{card['points']}点）")
     return "\n".join(L)
 
@@ -167,6 +177,8 @@ OUTPUT_SPEC = """{
   ],
   "main": {"first": [1], "second": [2, 3], "third": [2, 3, 4], "reason": "この買い目にした理由を1〜2文で"},
   "sub": {"first": [2], "second": [1], "third": [3, 4], "reason": "本線が外れるならどういう展開か、を1〜2文で"},
+  "upset": "このレースが荒れる可能性と、荒れるならどんな形か（誰が飛んで誰が来るか）を1〜2文で",
+  "hole": {"tickets": ["3-4-1", "3-4-5", "4-3-1"], "reason": "この穴が来るのはどういう展開の時か、を1文で"},
   "key_point": "勝負の決め手・注意点を1文で"
 }"""
 
@@ -207,9 +219,16 @@ OUTPUT_SCHEMA = {
         },
         "main": _bet_schema(),
         "sub": _bet_schema(),
+        "upset": {"type": "string"},
+        "hole": {
+            "type": "object",
+            "properties": {"tickets": {"type": "array", "items": {"type": "string"}}, "reason": {"type": "string"}},
+            "required": ["tickets", "reason"],
+            "additionalProperties": False,
+        },
         "key_point": {"type": "string"},
     },
-    "required": ["summary", "in_trust", "slit", "scenario", "boats", "main", "sub", "key_point"],
+    "required": ["summary", "in_trust", "slit", "scenario", "boats", "main", "sub", "upset", "hole", "key_point"],
     "additionalProperties": False,
 }
 
@@ -233,6 +252,10 @@ def build_instructions(style: str) -> str:
 - main（本線）は展開した時に {main_pts} 点以内。sub（抑え）は {sub_pts} 点以内で、本線と重ならない買い目にする。
 - 点数は「同じ艇が重複する組合せを除いた数」で数える。例: first=[1], second=[2,3], third=[2,3,4] は 1-2-3, 1-2-4, 1-3-2, 1-3-4 の4点。
 - 当てることが目的なので、点数の上限までしっかり使ってよい。
+- hole（穴）は本線・抑えとは別枠の「万舟券狙い」。フォーメーションではなく "1着-2着-3着" の買い目を1点ずつ、{formation.HOLE_POINTS} 点以内で tickets に並べる。
+  資料の穴候補のようなオッズ100倍以上の組合せから、展開が崩れた時に実際に来そうなものを選ぶ（本線・抑えと重ならないこと）。
+  オッズがまだ無い時は人気になりにくい組合せから選ぶ。狙える穴が無いと判断したら tickets を空の配列にする。
+- 穴を出すからといって、本線・抑えの中身は変えない（本線・抑えは当てることが最優先）。
 
 # 出力
 次のJSONだけを出力すること（説明文やコードブロック記号は不要）。boats は1〜6号艇の6件すべて。
@@ -269,9 +292,11 @@ def parse_response(text: str) -> dict:
         "slit": str(data.get("slit") or ""),
         "scenario": str(data.get("scenario") or ""),
         "key_point": str(data.get("key_point") or ""),
+        "upset": str(data.get("upset") or ""),
         "boats": [],
         "main": None,
         "sub": None,
+        "hole": None,
     }
     for b in data.get("boats") or []:
         try:
@@ -281,6 +306,15 @@ def parse_response(text: str) -> dict:
         if 1 <= n <= 6:
             out["boats"].append({"boat": n, "mark": str(b.get("mark") or "").strip()[:1], "comment": str(b.get("comment") or "")})
     out["boats"].sort(key=lambda x: x["boat"])
+    hole = data.get("hole")
+    if isinstance(hole, dict):
+        tickets = []
+        for raw in hole.get("tickets") or []:
+            t = formation.parse_ticket(raw)
+            if t and t not in tickets:
+                tickets.append(t)
+        if tickets:
+            out["hole"] = {"tickets": tickets[:formation.HOLE_POINTS], "reason": str(hole.get("reason") or "")}
     for key in ("main", "sub"):
         f = formation.normalize(data.get(key))
         if f:

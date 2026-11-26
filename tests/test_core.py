@@ -352,14 +352,19 @@ def test_instructions_are_stable_and_race_data_goes_in_user_message():
 
 def test_output_schema_matches_what_parse_response_reads():
     props = ai.OUTPUT_SCHEMA["properties"]
-    assert set(ai.OUTPUT_SCHEMA["required"]) == set(props) == {"summary", "in_trust", "slit", "scenario", "boats", "main", "sub", "key_point"}
+    assert set(ai.OUTPUT_SCHEMA["required"]) == set(props) == {"summary", "in_trust", "slit", "scenario", "boats", "main", "sub", "upset", "hole", "key_point"}
     assert props["main"]["required"] == ["first", "second", "third", "reason"]
     sample = {"summary": "s", "in_trust": "A", "slit": "123/456", "scenario": "x", "key_point": "k",
               "boats": [{"boat": n, "mark": "", "comment": "c"} for n in range(1, 7)],
               "main": {"first": [1], "second": [2, 3], "third": [2, 3, 4], "reason": "r"},
-              "sub": {"first": [2], "second": [1], "third": [3], "reason": "r"}}
+              "sub": {"first": [2], "second": [1], "third": [3], "reason": "r"},
+              "upset": "4号艇のまくりで荒れる余地", "hole": {"tickets": ["4-5-1", "4 - 5 - 6", "4-4-1", "7-1-2", "4-5-1"], "reason": "まくり"}}
     r = ai.parse_response(__import__("json").dumps(sample, ensure_ascii=False))
     assert len(r["boats"]) == 6 and formation.expand(r["sub"]) == [(2, 1, 3)]
+    assert r["upset"] == "4号艇のまくりで荒れる余地" and r["hole"] == {"tickets": [(4, 5, 1), (4, 5, 6)], "reason": "まくり"}
+    # 穴なし（空の配列）は None になり、エラーにはしない
+    sample["hole"] = {"tickets": [], "reason": ""}
+    assert ai.parse_response(__import__("json").dumps(sample, ensure_ascii=False))["hole"] is None
 
 
 def test_predict_with_ai_uses_claude_and_retries_once_on_invalid_bets(monkeypatch):
@@ -392,3 +397,76 @@ def test_predict_with_ai_falls_back_to_gemini_provider(monkeypatch):
     monkeypatch.setattr(ai, "call_gemini", lambda key, prompt, model_name=None: GOOD)
     r = ai.predict_with_ai("gemini", "gem", race, analysis, "少点数")
     assert r["provider"] == "gemini" and r["usage"] is None and r["main"]["second"] == [2, 3]
+
+
+# ---------------------------------------------------------------- 荒れ度と穴
+def test_upset_level_separates_solid_and_open_races():
+    solid = np.zeros((6, 6, 6))
+    solid[0, 1, 2], solid[0, 2, 1], solid[0, 1, 3] = 0.5, 0.3, 0.2
+    flat = np.zeros((6, 6, 6))
+    for i, j, k in itertools.permutations(range(6), 3):
+        flat[i, j, k] = 1 / 120
+    s, f = model.upset_level(solid), model.upset_level(flat)
+    assert s["label"] == "堅そう" and f["label"] == "荒れそう"
+    assert s["manshu_prob"] < 0.10 < 0.16 < f["manshu_prob"] <= 0.25
+    mid = model.upset_level(model.predict(make_race())["P"])
+    assert mid["label"] in ("堅そう", "ふつう", "荒れそう") and 0.05 < mid["manshu_prob"] < 0.26
+
+
+def _fake_odds(P):
+    """市場のオッズのつもりで、確率に反比例する倍率を作る（払戻率75%）。"""
+    return {f"{i + 1}-{j + 1}-{k + 1}": round(0.75 / max(P[i, j, k], 1e-6), 1)
+            for i, j, k in itertools.permutations(range(6), 3)}
+
+
+def test_hole_uses_only_manshu_odds_stays_small_and_separate():
+    a = service.analyze(make_race(), "的中重視", None)
+    P = a["pred"]["P"]
+    odds = _fake_odds(P)
+    a = service.analyze(make_race(), "的中重視", odds)
+    hole = a["hole"]
+    bought = {t["ticket"] for c in a["cards"] for t in c["tickets"]}
+    assert hole and hole["label"] == "穴" and hole["basis"] == "odds"
+    assert 1 <= hole["points"] <= formation.HOLE_POINTS
+    assert all(t["odds"] >= formation.HOLE_MIN_ODDS for t in hole["tickets"])
+    assert not bought & {t["ticket"] for t in hole["tickets"]}
+    # 100倍以上・未購入の中で、確率が高い順にちょうど上から取っている
+    pool = [(p, "-".join(map(str, t))) for p, t in a["pred"]["trifecta"]
+            if odds["-".join(map(str, t))] >= 100 and "-".join(map(str, t)) not in bought and p >= formation.HOLE_MIN_PROB]
+    assert [t["ticket"] for t in hole["tickets"]] == [t for _, t in pool[:formation.HOLE_POINTS]]
+    assert hole["prob"] == pytest.approx(sum(p for p, _ in pool[:formation.HOLE_POINTS]))
+    assert service.check_hit(a["cards"] + [hole], tuple(map(int, hole["tickets"][0]["ticket"].split("-")))) == "穴"
+    # AIが選んだ穴は、購入済みと重なるものを除き、8点までにする
+    main_first = tuple(map(int, a["cards"][0]["tickets"][0]["ticket"].split("-")))
+    ai_card = service.hole_card(P, odds, [main_first], [main_first, (6, 5, 4), (6, 5, 3)] + [(5, 6, k) for k in (1, 2, 3, 4)] + [(6, 4, k) for k in (1, 2, 3, 5)], "大外")
+    assert ai_card["basis"] == "ai" and ai_card["points"] == 8 and ai_card["reason"] == "大外"
+    assert "-".join(map(str, main_first)) not in {t["ticket"] for t in ai_card["tickets"]}
+
+
+def test_hole_without_odds_avoids_top_ranked_and_bought_tickets():
+    a = service.analyze(make_race(preview=False), "バランス", {})
+    hole = a["hole"]
+    top20 = {"-".join(map(str, t)) for _, t in a["pred"]["trifecta"][:20]}
+    bought = {t["ticket"] for c in a["cards"] for t in c["tickets"]}
+    got = {t["ticket"] for t in hole["tickets"]}
+    assert hole["basis"] == "rank" and 1 <= len(got) <= formation.HOLE_POINTS
+    assert not got & top20 and not got & bought
+
+
+def test_no_hole_when_every_ticket_is_below_manshu():
+    P = model.predict(make_race())["P"]
+    odds = {k: 50.0 for k in _fake_odds(P)}
+    assert formation.suggest_hole(P, odds, ()) == ([], "odds")
+    assert service.hole_card(P, odds, []) is None
+
+
+def test_race_text_lists_hole_candidates_and_upset():
+    race = make_race()
+    odds = _fake_odds(model.predict(race)["P"])
+    analysis = service.analyze(race, "バランス", odds)
+    text = ai.build_race_text(race, analysis, odds=odds)
+    assert "■荒れ度" in text and "■穴候補" in text and "モデルの穴:" in text
+    line = text.split("■穴候補")[1].split("\n")[1]
+    assert all(float(x.split(":")[1].split("倍")[0]) >= 100 for x in line.split())
+    assert formation.parse_ticket("3-4-1") == (3, 4, 1) and formation.parse_ticket("3-3-1") is None and formation.parse_ticket("1-2") is None
+    assert f"{formation.HOLE_POINTS} 点以内" in ai.build_instructions("バランス")
