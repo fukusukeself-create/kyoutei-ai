@@ -256,7 +256,7 @@ def wait_for_exhibition(jcd, rno, hd, deadline):
     if left is None or left < 0:
         return
     if left > 45:
-        st.caption(f"⏳ 展示は締切の約30分前から出ます（締切まであと{left}分）。近づいたら自動で確認を始めます。")
+        st.caption(f"⏳ 展示は締切の15〜30分前に出ます（締切まであと{left}分）。45分前になったら自動で確認を始めます。")
         return
     pv = service.preview_cached(jcd, rno, hd)
     if pv and any(b.get("ex_time") for b in pv["boats"].values()):
