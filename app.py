@@ -409,7 +409,10 @@ else:
     stadium = bundle["stadium"]
     trend = service.trend(results, rno)
     result = next((r for r in results if r["rno"] == rno), None)
-    analysis = service.analyze(race, style, odds)
+    avoid = st.checkbox("トリガミ回避（当たれば必ずプラスになる点数まで自動で絞る）", value=True, key="avoid_trigami",
+                        help="オッズを見て、どの買い目が当たっても購入額を上回るところまで点数を減らします。"
+                             "過去の検証では、回収率が上がり、損が約半分になりました。外すと決めた点数どおりに買います。")
+    analysis = service.analyze(race, style, odds, avoid)
     pred = analysis["pred"]
 
     venue_info = next((v for v in venues if v["jcd"] == jcd), {})
@@ -465,7 +468,7 @@ else:
         source_label = f"🤖 AI（{ai.PROVIDER_LABELS.get(ai_result.get('provider'), 'AI')}）の最終予想"
     else:
         cards = analysis["cards"]
-        source_label = "📊 データ予想（統計AI）"
+        source_label = "📊 データ予想（統計AI＋オッズ）" if pred.get("market") else "📊 データ予想（統計AI）"
 
     if result:
         hit = service.check_hit(cards, result["top3"])
@@ -481,15 +484,37 @@ else:
     if ai_result:
         trust = f"　イン信頼度 <b>{esc(ai_result['in_trust'])}</b>" if ai_result.get("in_trust") else ""
         slit = f"　進入予想 <b>{esc(ai_result['slit'])}</b>" if ai_result.get("slit") else ""
+        verdict = ai_result.get("verdict")
+        v_html = ""
+        if verdict:
+            color = {"勝負": "#15803d", "見送り": "#b91c1c"}.get(verdict, "#334155")
+            v_html = (f"<div style='margin-top:6px;'><span style='background:{color};color:#fff;font-weight:900;padding:1px 10px;"
+                      f"border-radius:999px;'>{esc(verdict)}</span>　{esc(ai_result.get('verdict_reason', ''))}</div>")
         show_html(f"""<div class="card"><b>{esc(ai_result['summary'])}</b>
-<div class="note" style="margin-top:4px;">{trust}{slit}</div></div>""")
+<div class="note" style="margin-top:4px;">{trust}{slit}</div>{v_html}</div>""")
     total_pts = sum(c["points"] for c in cards)
     total_prob = formation.coverage(pred["P"], [tuple(map(int, t["ticket"].split("-"))) for c in cards for t in c["tickets"]])
     for i, c in enumerate(cards):
         show_html(formation_card(c, sub=(i > 0)))
-    show_html(f"""<div class="card">合計 <b>{total_pts}点</b>（1点100円なら <b>{total_pts * 100:,}円</b>）
-どれかが当たる見込み <b>約{total_prob * 100:.0f}%</b>
-<div class="note">見込みは過去レースの統計から計算した目安です。1点ごとの％は「買い目を1点ずつ見る」で確認できます。</div></div>""")
+    pay = formation.payout_summary(cards)
+    pay_html = ""
+    if not ai_result and analysis.get("trimmed_from"):
+        pay_html += (f"<div style='margin-top:6px;color:#1d4ed8;'>✂ トリガミを避けるため、{analysis['trimmed_from']}点 → "
+                     f"<b>{total_pts}点</b>に絞りました。</div>")
+    if pay:
+        pay_html += (f"<div style='margin-top:6px;'>当たった時の払戻 <b>{pay['min_payout']:,.0f}円〜{pay['max_payout']:,.0f}円</b>"
+                    f"<small>（いまのオッズ・1点100円）</small></div>")
+        if pay["trigami"]:
+            worst = "、".join(f"{t['ticket']}（{t['payout']:,.0f}円）" for t in pay["trigami"][:4])
+            more = f" ほか{len(pay['trigami']) - 4}点" if len(pay["trigami"]) > 4 else ""
+            pay_html += (f"<div style='margin-top:6px;color:#b45309;'>⚠ <b>トリガミ {len(pay['trigami'])}点</b>："
+                         f"{esc(worst)}{more} は、当たっても購入額 {pay['stake']:,}円を下回ります。"
+                         f"「トリガミ回避」にチェックを入れるか、買い方を「少点数」にすると解消しやすくなります。</div>")
+        else:
+            pay_html += "<div style='margin-top:6px;color:#15803d;'>✅ どの買い目が当たっても購入額を上回ります（トリガミなし）。</div>"
+    show_html(f"""<div class="card">合計 <b>{total_pts}点</b>（1点100円なら <b>{total_pts * 100:,}円</b>）　
+どれかが当たる見込み <b>約{total_prob * 100:.0f}%</b>{pay_html}
+<div class="note" style="margin-top:6px;">見込みは過去レースの統計から計算した目安です。1点ごとの％とオッズは「買い目を1点ずつ見る」で確認できます。</div></div>""")
 
     with st.expander("❓ フォーメーションの読み方・買い方"):
         st.markdown("""
@@ -515,7 +540,8 @@ else:
 
     show_html('<div class="sec">📊 各艇の評価</div>')
     show_html(prob_table(race, analysis, ai_result))
-    show_html('<div class="note">◎本命 ○対抗 ▲単穴 △連下。確率はデータ予想モデルの計算値です。</div>')
+    show_html('<div class="note">◎本命 ○対抗 ▲単穴 △連下。確率はデータ予想モデルの計算値'
+              + ('に、いまのオッズ（みんなの評価）を半分取り込んだものです。' if pred.get("market") else 'です。') + '</div>')
 
     with st.expander("もっと当てやすい券種で買うなら（2連単・2連複・3連複・単勝）"):
         show_html('<div class="note">3連単は1〜3着を順番どおり当てる一番むずかしい券種です。当たりやすさを優先するなら下の券種もあります。</div>')

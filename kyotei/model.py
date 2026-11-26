@@ -331,6 +331,14 @@ def predict(race, use_preview=True, weights=None):
     X, courses = build_features(race, use_preview=live)
     w = weights["models"]["live" if live else "pre"]
     P = trifecta_probs(X, courses, race["jcd"], w)
+    out = {"mode": "live" if live else "pre", "courses": courses, "market": False}
+    out.update(summarize(P))
+    return out
+
+
+def summarize(P) -> dict:
+    """3連単確率 P(6x6x6) から、各艇の着順確率と、確率順の買い目一覧を作る。"""
+    P = np.asarray(P, dtype=np.float64)
     win = P.sum(axis=(1, 2))
     second = P.sum(axis=(0, 2))
     third = P.sum(axis=(0, 1))
@@ -340,8 +348,6 @@ def predict(race, use_preview=True, weights=None):
     ]
     combos.sort(reverse=True)
     return {
-        "mode": "live" if live else "pre",
-        "courses": courses,
         "P": P,
         "win": [float(x) for x in win],
         "second": [float(x) for x in second],
@@ -350,3 +356,33 @@ def predict(race, use_preview=True, weights=None):
         "top3": [float(x) for x in win + second + third],
         "trifecta": combos,
     }
+
+
+# ---------------------------------------------------------------------------
+# オッズ（世間の評価）を予想に取り込む
+# ---------------------------------------------------------------------------
+# 確定オッズつき1,380レース（モデルは学習外）の検証では、的中組合せの予測はオッズのほうがこのモデルより
+# 正確で、半々で掛け合わせるとバランスの買い目の的中率が 54.9% → 56.5% に上がった（オッズだけなら 57.8%）。
+# ただし締切前のオッズは確定オッズほど正確ではないので、オッズ一辺倒にはせず半々にしている。
+# 0 = モデルだけ、1 = オッズだけ。展示後（オッズが固まってくる時間帯）だけ使う。
+MARKET_WEIGHT = 0.5
+
+
+def market_probs(odds) -> np.ndarray | None:
+    """3連単オッズ120通りから、世間が見ている確率（1/オッズ を合計1にしたもの）を作る。そろっていなければ None。"""
+    Q = np.zeros((6, 6, 6))
+    for i, j, k in itertools.permutations(range(6), 3):
+        o = (odds or {}).get(f"{i + 1}-{j + 1}-{k + 1}")
+        if not o or o <= 0:
+            return None
+        Q[i, j, k] = 1.0 / o
+    return Q / Q.sum()
+
+
+def blend_with_market(P, odds, weight: float = MARKET_WEIGHT) -> np.ndarray | None:
+    """モデルの確率 P とオッズを混ぜた確率（幾何平均）。オッズがそろっていなければ None。"""
+    Q = market_probs(odds)
+    if Q is None or weight <= 0:
+        return None
+    B = np.where(Q > 0, np.power(np.maximum(np.asarray(P, dtype=np.float64), 1e-9), 1 - weight) * np.power(np.maximum(Q, 1e-12), weight), 0.0)
+    return B / B.sum()

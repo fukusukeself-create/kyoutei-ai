@@ -148,12 +148,21 @@ def build_race_text(race, analysis, original=None, stadium=None, trend=None, odd
         L.append("\n■3連単オッズ 人気順（参考。売れている順）")
         L.append(" ".join(f"{k}:{v:.1f}倍" for k, v in top))
 
-    L.append(f"\n■データ予想モデル（過去約6万レースから学習。{'展示込み' if pred['mode'] == 'live' else '出走表のみ'}）")
+    L.append(f"\n■データ予想モデル（過去約6万レースから学習。{'展示込み' if pred['mode'] == 'live' else '出走表のみ'}"
+             + ("。確率にはいまのオッズ＝世間の評価を半分取り込み済み" if pred.get("market") else "") + "）")
     for i, b in enumerate(race["boats"]):
         L.append(f"{b['boat']}号艇: 1着{pred['win'][i] * 100:.1f}% 2連対{pred['top2'][i] * 100:.1f}% 3連対{pred['top3'][i] * 100:.1f}%")
-    L.append("3連単の確率上位: " + " ".join(f"{a}-{b}-{c}:{p * 100:.1f}%" for p, (a, b, c) in pred["trifecta"][:15]))
+    def with_odds(a, b, c):
+        o = (odds or {}).get(f"{a}-{b}-{c}")
+        return f"({o:.1f}倍)" if o else ""
+    L.append("3連単の確率上位" + ("（カッコ内は今のオッズ）" if odds else "") + ": "
+             + " ".join(f"{a}-{b}-{c}:{p * 100:.1f}%{with_odds(a, b, c)}" for p, (a, b, c) in pred["trifecta"][:20]))
     for card in analysis["cards"]:
         L.append(f"モデルの{card['label']}: {card['text']}（{card['points']}点）")
+    pay = formation.payout_summary(analysis["cards"])
+    if pay:
+        L.append(f"モデルの買い目を1点100円で買うと購入額{pay['stake']}円。当たった時の払戻は{pay['min_payout']:.0f}〜{pay['max_payout']:.0f}円、"
+                 f"購入額を下回る買い目（トリガミ）は{len(pay['trigami'])}点。")
     return "\n".join(L)
 
 
@@ -167,6 +176,8 @@ OUTPUT_SPEC = """{
   ],
   "main": {"first": [1], "second": [2, 3], "third": [2, 3, 4], "reason": "この買い目にした理由を1〜2文で"},
   "sub": {"first": [2], "second": [1], "third": [3, 4], "reason": "本線が外れるならどういう展開か、を1〜2文で"},
+  "verdict": "勝負 か 通常 か 見送り（このレースを買う価値の判定）",
+  "verdict_reason": "その判定の理由を1文で（展開の読みやすさ、オッズと当たりやすさの釣り合い、トリガミの有無）",
   "key_point": "勝負の決め手・注意点を1文で"
 }"""
 
@@ -207,32 +218,49 @@ OUTPUT_SCHEMA = {
         },
         "main": _bet_schema(),
         "sub": _bet_schema(),
+        "verdict": {"type": "string", "enum": ["勝負", "通常", "見送り"]},
+        "verdict_reason": {"type": "string"},
         "key_point": {"type": "string"},
     },
-    "required": ["summary", "in_trust", "slit", "scenario", "boats", "main", "sub", "key_point"],
+    "required": ["summary", "in_trust", "slit", "scenario", "boats", "main", "sub", "verdict", "verdict_reason", "key_point"],
     "additionalProperties": False,
 }
+
+
+# 買い方の検証結果（学習に使っていない直近60日・8,960レース）。詳しい数字は README の「収支についての検証」に記載。
+RESEARCH_FACTS = """- 確率の高い買い目ほど回収率が高く、人気薄ほど低い（データ予想の確率が1%未満の買い目は回収率約58%、12%以上は約85%）。
+- 点数を増やすほど回収率は下がる（確率上位1点だけ買うと約82%、12点買うと約76%）。
+- 買い方をどう工夫しても、長期の回収率が100%を超える方法は見つかっていない。だから「可能性の低い買い目を足さない」
+  「当たった時に購入額を割らない」「自信のないレースは見送る」ことが収支を守る。"""
 
 
 def build_instructions(style: str) -> str:
     """AIへの指示（レースによらず同じ部分）。"""
     main_pts, sub_pts = formation.STYLES.get(style, formation.STYLES[formation.DEFAULT_STYLE])
     return f"""あなたはボートレース（競艇）の予想を専門とするAIです。
-利用者が渡すレース資料を全部読み、そのレースの3連単を「当てる」ことを最優先に予想してください。
-配当の高さや回収率は考えなくてよく、実際に来る可能性が高い買い目を選ぶこと。
+利用者が渡すレース資料を全部読み、3連単の買い目を決めてください。
+目標は「よく当たり、かつ長く買い続けた時の収支ができるだけ良くなる」買い目です。穴狙いはしません。
+
+# 過去レースの検証で分かっていること（買い目を決める前提にする）
+{RESEARCH_FACTS}
 
 # 予想の進め方
 1. 進入隊形を決める（スタート展示の進入があればそれを重視。進入固定なら枠なり）。
 2. スタート（展示ST・平均ST・F持ち）と機力（展示タイム・オリジナル展示・モーター・今節成績）から、1マークの展開を組み立てる。
 3. 風・波・この場のコース傾向・本日の決まり手の傾向で補正する。
 4. データ予想モデルの確率は過去約6万レースの統計から出した土台。基本はこれを尊重し、資料から読み取れる明確な理由がある時だけ動かす。
-5. 最後に買い目をフォーメーションで決める。
+5. オッズがあれば、買い目ごとに「来る可能性」と「オッズ」が釣り合っているかを確かめる。
+6. 買い目をフォーメーションで決め、最後にこのレースを買う価値（verdict）を判定する。
 
 # 買い目のルール
 - 券種は3連単。first=1着候補、second=2着候補、third=3着候補（艇番 1〜6 の数字の配列）。
 - main（本線）は展開した時に {main_pts} 点以内。sub（抑え）は {sub_pts} 点以内で、本線と重ならない買い目にする。
 - 点数は「同じ艇が重複する組合せを除いた数」で数える。例: first=[1], second=[2,3], third=[2,3,4] は 1-2-3, 1-2-4, 1-3-2, 1-3-4 の4点。
-- 当てることが目的なので、点数の上限までしっかり使ってよい。
+- 点数の上限は「使ってよい最大」で、埋める必要はない。来る可能性が2%に満たない組合せのために点数を増やさない。
+  抑えが要らないレースは sub の first・second・third を空の配列にしてよい。
+- 当たっても購入額（合計点数×100円）を下回る買い目（トリガミ）がなるべく出ないよう、堅いレースほど点数を絞る。
+- verdict: 「勝負」＝展開が読みやすく、本線の信頼度が高く、当たれば購入額を上回る。「見送り」＝混戦で絞れない、
+  または当たってもほとんどトリガミで買う価値が薄い。どちらでもなければ「通常」。見送りでも買い目は出す（買うかどうかは利用者が決める）。
 
 # 出力
 次のJSONだけを出力すること（説明文やコードブロック記号は不要）。boats は1〜6号艇の6件すべて。
@@ -269,6 +297,8 @@ def parse_response(text: str) -> dict:
         "slit": str(data.get("slit") or ""),
         "scenario": str(data.get("scenario") or ""),
         "key_point": str(data.get("key_point") or ""),
+        "verdict": str(data.get("verdict") or "").strip() if str(data.get("verdict") or "").strip() in ("勝負", "通常", "見送り") else "",
+        "verdict_reason": str(data.get("verdict_reason") or ""),
         "boats": [],
         "main": None,
         "sub": None,
