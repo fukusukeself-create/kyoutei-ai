@@ -11,8 +11,13 @@ import os
 
 import streamlit as st
 
-from kyotei import ai, formation, model, service, sources
-from kyotei.sources import SourceError, VENUES
+import fresh_modules
+
+# 新しい版が届いた直後に、古い kyotei パッケージがメモリに残っていたら読み込み直す（import より前に行う）
+fresh_modules.ensure_fresh("kyotei", os.path.join(os.path.dirname(os.path.abspath(__file__)), "kyotei"))
+
+from kyotei import ai, formation, model, service, sources  # noqa: E402
+from kyotei.sources import SourceError, VENUES  # noqa: E402
 
 st.set_page_config(page_title="競艇AI予想", page_icon="🚤", layout="centered", initial_sidebar_state="collapsed")
 
