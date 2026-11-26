@@ -1,630 +1,573 @@
-import streamlit as st
-import requests
-from bs4 import BeautifulSoup
+"""競艇AI予想アプリ（Streamlit）。
+
+  開催一覧 / 締切順 からレースを選ぶ
+    → 公式サイトなどから出走表・直前情報・オッズ・当日結果を集める
+    → データ予想モデル（過去約6万レースから学習）が3連単の確率を計算
+    → AI（Claude Opus 5.5。キーが無ければ Gemini）が展開を読んで最終的な買い目（フォーメーション）を決める
+"""
 import datetime
+import html
 import os
-import re
-import time
-from google import genai
-from google.genai import errors as genai_errors
+
+import streamlit as st
+
+from kyotei import ai, formation, model, service, sources
+from kyotei.sources import SourceError, VENUES
+
+st.set_page_config(page_title="競艇AI予想", page_icon="🚤", layout="centered", initial_sidebar_state="collapsed")
 
 # ----------------------------------------------------
-# ページ基本設定
-# ----------------------------------------------------
-st.set_page_config(
-    page_title="BOAT RACE",
-    page_icon="🚤",
-    layout="wide",
-    initial_sidebar_state="collapsed"
-)
-
-# ----------------------------------------------------
-# 日本標準時 (JST)
-# ----------------------------------------------------
-JST = datetime.timezone(datetime.timedelta(hours=9))
-now_jst = datetime.datetime.now(JST)
-today_jst_str = now_jst.strftime("%Y%m%d")
-
-# ----------------------------------------------------
-# 公式アプリ 完全再現CSS
+# 見た目
 # ----------------------------------------------------
 st.markdown("""
 <style>
-    .stApp {
-        background-color: #f1f3f7;
-        font-family: -apple-system, BlinkMacSystemFont, "Hiragino Kaku Gothic ProN", Meiryo, sans-serif;
-    }
-    .block-container {
-        padding: 0.2rem 0.3rem 2rem 0.3rem !important;
-        max-width: 100% !important;
-    }
+.stApp { background:#f1f3f7; font-family:-apple-system,BlinkMacSystemFont,"Hiragino Kaku Gothic ProN",Meiryo,sans-serif; }
+.block-container { padding:3.6rem 0.6rem 3rem 0.6rem !important; max-width:760px !important; }
+.top-bar { background:#0066cc; color:#fff; padding:10px 14px; border-radius:8px; margin-bottom:8px;
+           display:flex; justify-content:space-between; align-items:center; }
+.top-bar .t { font-size:1.15rem; font-weight:900; }
+.top-bar .d { font-size:0.8rem; opacity:.9; }
+.race-head { background:#0b3d91; color:#fff; padding:10px 14px; border-radius:8px; margin:6px 0 10px 0; }
+.race-head .v { font-size:1.2rem; font-weight:900; }
+.race-head .s { font-size:0.8rem; opacity:.9; margin-top:2px; }
+.race-head .dl { float:right; text-align:right; font-size:0.8rem; }
+.race-head .dl b { font-size:1.15rem; }
+.badge { display:inline-block; font-size:0.68rem; font-weight:800; padding:1px 6px; border-radius:3px;
+         background:#f59e0b; color:#111; margin-left:6px; vertical-align:middle; }
+.sec { font-weight:900; font-size:1.0rem; color:#0f172a; margin:14px 0 6px 0; border-left:5px solid #0066cc; padding-left:8px; }
+.card { background:#fff; border:1px solid #d5dbe5; border-radius:10px; padding:12px; margin-bottom:10px; color:#0f172a; }
+.note { font-size:0.78rem; color:#475569; }
 
-    /* 最上部 公式ブルーヘッダー */
-    .br-top-bar {
-        background: #0066cc;
-        color: white;
-        padding: 8px 12px;
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        border-radius: 4px;
-        margin-bottom: 4px;
-    }
-    .br-logo-title {
-        font-size: 1.2rem;
-        font-weight: 900;
-        display: flex;
-        align-items: center;
-        gap: 6px;
-    }
-    .br-sub-links {
-        font-size: 0.75rem;
-        font-weight: bold;
-        display: flex;
-        gap: 10px;
-    }
+/* 艇番のチップ（公式の枠色） */
+.bt { display:inline-flex; align-items:center; justify-content:center; width:1.9em; height:1.9em; border-radius:6px;
+      font-weight:900; margin:1px 2px; border:1.5px solid #94a3b8; font-size:1em; line-height:1; }
+.b1 { background:#fff; color:#111; } .b2 { background:#111; color:#fff; border-color:#111; }
+.b3 { background:#e02424; color:#fff; border-color:#e02424; } .b4 { background:#1d4ed8; color:#fff; border-color:#1d4ed8; }
+.b5 { background:#facc15; color:#111; border-color:#eab308; } .b6 { background:#16a34a; color:#fff; border-color:#16a34a; }
+.bt.sm { width:1.5em; height:1.5em; font-size:0.8em; border-radius:4px; margin:0 1px; }
 
-    /* 開催中カード: ナイター (蒲郡・住之江・下関・若松) */
-    .card-night-box {
-        border-radius: 6px;
-        border: 1.5px solid #6366f1;
-        overflow: hidden;
-        background: #ffffff;
-        margin-bottom: 4px;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.08);
-    }
-    .card-night-head {
-        background: linear-gradient(180deg, #c7d2fe 0%, #a5b4fc 100%);
-        padding: 3px 4px;
-        font-weight: 900;
-        font-size: 0.88rem;
-        color: #1e1b4b;
-        text-align: center;
-    }
+/* フォーメーション */
+.fm { background:#fff; border:2px solid #0066cc; border-radius:12px; padding:12px; margin-bottom:12px; color:#0f172a; }
+.fm.sub { border-color:#f59e0b; }
+.fm-head { display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; }
+.fm-tag { background:#0066cc; color:#fff; font-weight:900; padding:2px 12px; border-radius:999px; font-size:0.95rem; }
+.fm.sub .fm-tag { background:#f59e0b; color:#111; }
+.fm-pts { font-weight:900; font-size:1.05rem; }
+.fm-pts small { font-weight:600; color:#475569; font-size:0.75rem; }
+.fm-grid { display:flex; align-items:stretch; gap:4px; }
+.fm-col { flex:1; background:#f1f5f9; border-radius:8px; padding:6px 4px; text-align:center; }
+.fm-col .p { font-size:0.75rem; font-weight:800; color:#334155; margin-bottom:4px; }
+.fm-col .bs { font-size:1.15rem; }
+.fm-arrow { display:flex; align-items:center; color:#64748b; font-weight:900; }
+.fm-how { margin-top:8px; font-size:0.88rem; background:#fffbeb; border-radius:6px; padding:6px 8px; }
+.fm-reason { margin-top:6px; font-size:0.85rem; color:#334155; }
+.tk { display:inline-block; background:#f8fafc; border:1px solid #cbd5e1; border-radius:6px; padding:2px 6px;
+      margin:2px 3px 2px 0; font-size:0.82rem; font-weight:700; white-space:nowrap; }
+.tk small { font-weight:500; color:#64748b; }
 
-    /* 開催中カード: 大村専用 */
-    .card-omura-box {
-        border-radius: 6px;
-        border: 1.5px solid #0284c7;
-        overflow: hidden;
-        background: #ffffff;
-        margin-bottom: 4px;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.08);
-    }
-    .card-omura-head {
-        background: linear-gradient(180deg, #38bdf8 0%, #0284c7 100%);
-        padding: 3px 4px;
-        font-weight: 900;
-        font-size: 0.88rem;
-        color: white;
-        text-align: center;
-        text-shadow: 0 1px 2px rgba(0,0,0,0.3);
-    }
-
-    /* 発売終了カード */
-    .card-closed-box {
-        border-radius: 6px;
-        border: 1px solid #94a3b8;
-        overflow: hidden;
-        background: #ffffff;
-        margin-bottom: 4px;
-    }
-    .card-closed-head {
-        background: #94a3b8;
-        padding: 3px 4px;
-        font-weight: 800;
-        font-size: 0.82rem;
-        color: #0f172a;
-        text-align: center;
-    }
-    .card-closed-body {
-        background: #ffffff;
-        color: #334155;
-        font-weight: 800;
-        font-size: 0.8rem;
-        text-align: center;
-        padding: 4px 2px;
-    }
-
-    /* 非開催カード (--) */
-    .card-none-box {
-        border-radius: 6px;
-        background: #d8dde6;
-        border: 1px solid #cbd5e1;
-        text-align: center;
-        padding: 10px 2px;
-        margin-bottom: 4px;
-        color: #475569;
-        font-weight: bold;
-        font-size: 0.85rem;
-    }
-
-    /* G3バッジ */
-    .badge-g3 {
-        background-color: #0066cc;
-        color: white;
-        font-size: 0.65rem;
-        padding: 1px 3px;
-        border-radius: 2px;
-        font-weight: bold;
-        margin-right: 2px;
-    }
-
-    /* 締切順リストカード */
-    .dl-row {
-        border-radius: 6px;
-        border: 1.5px solid #0066cc;
-        margin-bottom: 6px;
-        overflow: hidden;
-        background: #ffffff;
-        display: flex;
-        align-items: center;
-    }
-    .dl-row-urgent {
-        border: 2px solid #ef4444;
-        background: #fff1f2;
-    }
-    .dl-left-part {
-        width: 30%;
-        padding: 8px 4px;
-        font-weight: 900;
-        font-size: 0.9rem;
-        text-align: center;
-        border-right: 1px solid #cbd5e1;
-    }
-    .dl-right-part {
-        width: 70%;
-        padding: 6px 8px;
-    }
-
-    /* ボタン共通 */
-    div[data-testid="stButton"] > button {
-        width: 100%;
-        border-radius: 4px;
-        padding: 2px 4px;
-        min-height: 26px;
-        font-size: 0.8rem;
-    }
+/* 表 */
+.tw { overflow-x:auto; }
+table.t { border-collapse:collapse; width:100%; font-size:0.8rem; background:#fff; color:#0f172a; }
+table.t th { background:#e2e8f0; padding:4px 5px; border:1px solid #cbd5e1; white-space:nowrap; font-size:0.72rem; }
+table.t td { padding:4px 5px; border:1px solid #e2e8f0; text-align:center; white-space:nowrap; }
+table.t td.l { text-align:left; }
+.best { color:#dc2626; font-weight:900; }
+.bar { background:#e2e8f0; border-radius:4px; height:8px; width:100%; min-width:60px; }
+.bar > div { background:#0066cc; height:8px; border-radius:4px; }
+.hit { background:#dcfce7; border:2px solid #16a34a; color:#14532d; border-radius:10px; padding:10px; font-weight:800; margin-bottom:10px; }
+.miss { background:#fee2e2; border:2px solid #dc2626; color:#7f1d1d; border-radius:10px; padding:10px; font-weight:800; margin-bottom:10px; }
+div[data-testid="stButton"] > button { width:100%; border-radius:8px; padding-left:4px; padding-right:4px; }
+/* スマホでも横並びを崩さない（Streamlitは幅が狭いと縦に積んでしまう） */
+div[data-testid="stHorizontalBlock"] { flex-wrap:nowrap !important; gap:0.4rem !important; }
+div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"] { min-width:0 !important; flex:1 1 0 !important; width:auto !important; }
 </style>
 """, unsafe_allow_html=True)
 
-# ----------------------------------------------------
-# 24場 定義データ
-# ----------------------------------------------------
-VENUES = [
-    {"code": "01", "name": "桐生", "type": "ナイター"},
-    {"code": "02", "name": "戸田", "type": "デイ"},
-    {"code": "03", "name": "江戸川", "type": "デイ"},
-    {"code": "04", "name": "平和島", "type": "デイ"},
-    {"code": "05", "name": "多摩川", "type": "デイ"},
-    {"code": "06", "name": "浜名湖", "type": "デイ"},
-    {"code": "07", "name": "蒲郡", "type": "ナイター"},
-    {"code": "08", "name": "常滑", "type": "デイ"},
-    {"code": "09", "name": "津", "type": "デイ"},
-    {"code": "10", "name": "三国", "type": "モーニング"},
-    {"code": "11", "name": "びわこ", "type": "デイ"},
-    {"code": "12", "name": "住之江", "type": "ナイター"},
-    {"code": "13", "name": "尼崎", "type": "デイ"},
-    {"code": "14", "name": "鳴門", "type": "モーニング"},
-    {"code": "15", "name": "丸亀", "type": "ナイター"},
-    {"code": "16", "name": "児島", "type": "デイ"},
-    {"code": "17", "name": "宮島", "type": "デイ"},
-    {"code": "18", "name": "徳山", "type": "モーニング"},
-    {"code": "19", "name": "下関", "type": "ナイター"},
-    {"code": "20", "name": "若松", "type": "ナイター"},
-    {"code": "21", "name": "芦屋", "type": "モーニング"},
-    {"code": "22", "name": "福岡", "type": "デイ"},
-    {"code": "23", "name": "唐津", "type": "モーニング"},
-    {"code": "24", "name": "大村", "type": "ナイター"},
-]
 
 # ----------------------------------------------------
-# セッションとブラウザ完全偽装ヘッダー
+# データ取得（キャッシュつき。同じレースを何度開いても取得元に負荷をかけない）
 # ----------------------------------------------------
-session = requests.Session()
-CUSTOM_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-    "Accept-Language": "ja,ja-JP;q=0.9,en-US;q=0.8,en;q=0.7",
-    "Referer": "https://www.boatrace.jp/",
-    "Sec-Ch-Ua": '"Not/A)Brand";v="8", "Chromium";v="126", "Google Chrome";v="126"',
-    "Sec-Ch-Ua-Mobile": "?0",
-    "Sec-Ch-Ua-Platform": '"Windows"',
-    "Sec-Fetch-Dest": "document",
-    "Sec-Fetch-Mode": "navigate",
-    "Sec-Fetch-Site": "same-origin",
-}
+@st.cache_data(ttl=300, show_spinner=False)
+def load_schedule(hd):
+    return service.get_schedule(hd)
 
-# ----------------------------------------------------
-# データ取得モジュール
-# ----------------------------------------------------
-def fetch_all_venues_status(hd: str):
-    """当日の開催情報・締切情報を安定取得"""
-    url = f"https://www.boatrace.jp/owpc/pc/race/index?hd={hd}"
-    venue_status = {}
-    for v in VENUES:
-        venue_status[v["code"]] = {
-            "name": v["name"],
-            "type": v["type"],
-            "status": "none",
-            "grade": "",
-            "day_text": "",
-            "next_rno": 1,
-            "deadline": "",
-            "race_name": "予選"
-        }
-    deadline_list = []
 
+def get_secret(name):
     try:
-        res = session.get(url, headers=CUSTOM_HEADERS, timeout=8)
-        res.encoding = res.apparent_encoding
-        soup = BeautifulSoup(res.text, "html.parser")
-        
-        # 全てのテーブル行をチェック
-        for tr in soup.find_all("tr"):
-            row_html = str(tr)
-            row_text = " ".join(tr.get_text().split())
-            
-            for v in VENUES:
-                code = v["code"]
-                if f"jcd={code}" in row_html:
-                    # グレード
-                    grade = ""
-                    if "SG" in row_text: grade = "SG"
-                    elif "G1" in row_text or "GI" in row_text: grade = "G1"
-                    elif "G2" in row_text or "GII" in row_text: grade = "G2"
-                    elif "G3" in row_text or "GIII" in row_text: grade = "G3"
-
-                    # 日程
-                    day_m = re.search(r"(初日|\d+日目|最終日)", row_text)
-                    day_text = day_m.group(1) if day_m else "一般"
-
-                    # 締切時刻
-                    time_m = re.findall(r"(\d{1,2}:\d{2})", row_text)
-                    rno_m = re.findall(r"(\d{1,2})R", row_text)
-
-                    if time_m:
-                        dtime = time_m[0]
-                        rno = int(rno_m[0]) if rno_m else 11
-                        rname_m = re.search(rf"{rno}R\s*([^\d\s]{{2,8}})", row_text)
-                        rname = rname_m.group(1) if rname_m else "予選"
-
-                        venue_status[code]["status"] = "active"
-                        venue_status[code]["grade"] = grade
-                        venue_status[code]["day_text"] = day_text
-                        venue_status[code]["next_rno"] = rno
-                        venue_status[code]["deadline"] = dtime
-                        venue_status[code]["race_name"] = rname
-
-                        if not any(d["jcd"] == code for d in deadline_list):
-                            deadline_list.append({
-                                "jcd": code,
-                                "name": venue_status[code]["name"],
-                                "rno": rno,
-                                "deadline": dtime,
-                                "type": v["type"],
-                                "grade": grade,
-                                "day_text": day_text,
-                                "race_name": rname
-                            })
-                    elif ("発売終了" in row_text) or ("終了" in row_text):
-                        if venue_status[code]["status"] != "active":
-                            venue_status[code]["status"] = "closed"
-                            venue_status[code]["grade"] = grade
-                            venue_status[code]["day_text"] = day_text
-
-        deadline_list.sort(key=lambda x: x["deadline"])
+        value = st.secrets.get(name, "")
     except Exception:
+        value = ""
+    return value or os.environ.get(name, "")
+
+
+# ----------------------------------------------------
+# HTML部品
+# ----------------------------------------------------
+def show_html(s):
+    """HTMLを表示する。空行や字下げがあるとMarkdownがHTMLを途中で打ち切るので、1行に詰めてから渡す。"""
+    st.markdown(" ".join(line.strip() for line in str(s).splitlines() if line.strip()), unsafe_allow_html=True)
+
+
+def esc(s):
+    return html.escape(str(s if s is not None else ""))
+
+
+def chip(b, small=False):
+    return f'<span class="bt b{int(b)}{" sm" if small else ""}">{int(b)}</span>'
+
+
+def chips(bs):
+    return "".join(chip(b) for b in bs)
+
+
+def ticket_html(key):
+    return "".join(chip(x, small=True) for x in key.split("-"))
+
+
+def fnum(v, fmt="{:.2f}", none="-"):
+    try:
+        if v is None or v == "":
+            return none
+        return fmt.format(float(v))
+    except (TypeError, ValueError):
+        return none
+
+
+def formation_card(card, sub=False, show_prob=True):
+    f = card["formation"]
+    names = "・".join
+    how = (f"1着に <b>{names(map(str, f['first']))}</b>、2着に <b>{names(map(str, f['second']))}</b>、"
+           f"3着に <b>{names(map(str, f['third']))}</b> をマーク")
+    dup = f"（本線と重なる{card['dups']}点は除く）" if card.get("dups") else ""
+    prob = f"　<small>当たる見込み 約{card['prob'] * 100:.0f}%</small>" if show_prob and card.get("prob") is not None else ""
+    tickets = ""
+    for t in card["tickets"]:
+        extra = []
+        if t.get("prob") is not None:
+            extra.append(f"{t['prob'] * 100:.1f}%")
+        if t.get("odds"):
+            extra.append(f"{t['odds']:.1f}倍")
+        tickets += f'<span class="tk">{ticket_html(t["ticket"])} <small>{" / ".join(extra)}</small></span>'
+    reason = f'<div class="fm-reason">💬 {esc(card["reason"])}</div>' if card.get("reason") else ""
+    return f"""
+<div class="fm{' sub' if sub else ''}">
+  <div class="fm-head"><span class="fm-tag">{esc(card['label'])}</span>
+    <span class="fm-pts">3連単 {card['points']}点 <small>{card['points'] * 100:,}円(1点100円){prob}</small></span></div>
+  <div class="fm-grid">
+    <div class="fm-col"><div class="p">1着</div><div class="bs">{chips(f['first'])}</div></div>
+    <div class="fm-arrow">▶</div>
+    <div class="fm-col"><div class="p">2着</div><div class="bs">{chips(f['second'])}</div></div>
+    <div class="fm-arrow">▶</div>
+    <div class="fm-col"><div class="p">3着</div><div class="bs">{chips(f['third'])}</div></div>
+  </div>
+  <div class="fm-how">📝 買い方: {how} → <b>{card['points']}点</b>{dup}</div>
+  {reason}
+  <details style="margin-top:6px;"><summary class="note">買い目を1点ずつ見る（{card['points']}点）</summary>
+  <div style="margin-top:4px;">{tickets}</div></details>
+</div>"""
+
+
+def prob_table(race, analysis, ai_result=None):
+    pred = analysis["pred"]
+    ai_marks = {b["boat"]: b for b in (ai_result or {}).get("boats", [])}
+    rows = ""
+    for i, b in enumerate(race["boats"]):
+        n = b["boat"]
+        mark = ai_marks.get(n, {}).get("mark") if ai_result else analysis["marks"].get(n, "")
+        comment = ai_marks.get(n, {}).get("comment", "")
+        w = pred["win"][i] * 100
+        rows += (
+            f"<tr><td>{chip(n)}</td><td><b>{esc(mark or '')}</b></td>"
+            f"<td class='l'><b>{esc(b['name'])}</b> <small>{esc(b.get('cls', ''))}</small>"
+            + (f"<br><small style='white-space:normal;color:#475569;'>{esc(comment)}</small>" if comment else "")
+            + f"</td><td><b>{w:.0f}%</b><div class='bar'><div style='width:{min(w, 100):.0f}%'></div></div></td>"
+            f"<td>{pred['top2'][i] * 100:.0f}%</td><td>{pred['top3'][i] * 100:.0f}%</td></tr>"
+        )
+    return ("<div class='tw'><table class='t'><tr><th>枠</th><th>印</th><th>選手</th><th>1着の確率</th>"
+            "<th>2着以内</th><th>3着以内</th></tr>" + rows + "</table></div>")
+
+
+def program_table(race, courses):
+    rows = ""
+    for i, b in enumerate(race["boats"]):
+        series = " ".join(esc(s.get("place_text") or s.get("place") or "") for s in b.get("series") or [] if s.get("place_text") or s.get("place"))
+        c = courses[i]
+        cs = (b.get("course_stats") or {}).get(str(c))
+        cs_txt = f"{cs[1] / cs[0] * 100:.0f}% <small>({cs[0]}走)</small>" if cs and cs[0] else "-"
+        fl = f"F{b.get('f') or 0}" + (f" L{b['l']}" if b.get("l") else "")
+        rows += (
+            f"<tr><td>{chip(b['boat'])}</td><td class='l'><b>{esc(b['name'])}</b><br><small>{esc(b.get('cls', ''))} "
+            f"{esc(b.get('branch', ''))} {esc(b.get('age') or '')}歳</small></td>"
+            f"<td>{fnum(b.get('nat_win'))}<br><small>{fnum(b.get('nat_2'), '{:.0f}')}%</small></td>"
+            + (f"<td>{fnum(b.get('loc_win'))}<br><small>{fnum(b.get('loc_2'), '{:.0f}')}%</small></td>" if b.get("loc_win") else "<td>-</td>") +
+            f"<td>{fnum(b.get('motor_2'), '{:.0f}')}%<br><small>No.{esc(b.get('motor_no') or '-')}</small></td>"
+            f"<td>{fnum(b.get('avg_st'))}<br><small>{esc(fl)}</small></td>"
+            f"<td>{cs_txt}</td><td class='l'>{series or '-'}</td></tr>"
+        )
+    return ("<div class='tw'><table class='t'><tr><th>枠</th><th>選手</th><th>全国勝率<br>2連率</th><th>当地勝率<br>2連率</th>"
+            "<th>モーター<br>2連率</th><th>平均ST<br>F/L</th><th>このコースの<br>1着率</th><th>今節の着順</th></tr>"
+            + rows + "</table></div>")
+
+
+def preview_table(race, pv, original):
+    ex = {b: v.get("ex_time") for b, v in pv["boats"].items() if v.get("ex_time")}
+    rank = {b: i + 1 for i, (b, _) in enumerate(sorted(ex.items(), key=lambda kv: kv[1]))}
+    cols = original["columns"] if original else []
+    best_o = {c: min((v.get(c) for v in original["boats"].values() if v.get(c)), default=None) for c in cols} if original else {}
+    rows = ""
+    for b in race["boats"]:
+        p = pv["boats"].get(b["boat"], {})
+        course = p.get("course")
+        if course and course != b["boat"]:
+            c_txt = f"<span class='best'>{course}{'↑' if course < b['boat'] else '↓'}</span>"
+        else:
+            c_txt = esc(course or "-")
+        st_v = p.get("st")
+        st_txt = "-" if st_v is None else (f"<span class='best'>F{abs(st_v):.2f}</span>" if st_v < 0 else f"{st_v:.2f}")
+        et = p.get("ex_time")
+        r = rank.get(b["boat"])
+        et_txt = (f"<span class='{'best' if r == 1 else ''}'>{et:.2f}</span> <small>{r}位</small>") if et and r else "-"
+        o_txt = ""
+        for c in cols:
+            v = (original["boats"].get(b["boat"]) or {}).get(c)
+            o_txt += "<td>" + (f"<span class='best'>{v:.2f}</span>" if v and best_o.get(c) and v <= best_o[c] else fnum(v)) + "</td>"
+        parts = " ".join(x for x in [p.get("parts"), p.get("propeller")] if x)
+        adj = f" 調整{p['weight_adj']:.1f}kg" if p.get("weight_adj") else ""
+        rows += (f"<tr><td>{chip(b['boat'])}</td><td>{c_txt}</td><td>{st_txt}</td><td>{et_txt}</td>"
+                 f"{o_txt}<td>{fnum(p.get('tilt'), '{:.1f}')}</td><td class='l'>{esc(parts + adj)}</td></tr>")
+    head = "".join(f"<th>{esc(c)}</th>" for c in cols)
+    wind = model.wind_label(pv.get("wind"), pv.get("wind_dir"))
+    as_of = f"（{esc(pv['as_of'])}）" if pv.get("as_of") else ""
+    weather = (f"<div style='margin-bottom:6px;font-size:0.88rem;'>{esc(pv.get('weather') or '')}　気温{fnum(pv.get('temp'), '{:.0f}')}℃　"
+               f"<b>風 {esc(wind)} {fnum(pv.get('wind'), '{:.0f}')}m</b>　波{fnum(pv.get('wave'), '{:.0f}')}cm　"
+               f"水温{fnum(pv.get('water_temp'), '{:.0f}')}℃ <small>{as_of}</small></div>")
+    slit = sorted(race["boats"], key=lambda b: pv["boats"].get(b["boat"], {}).get("course") or b["boat"])
+    slit_html = "".join(chip(b["boat"], small=True) for b in slit)
+    return (weather + f"<div style='margin-bottom:6px;font-size:0.88rem;'>スタート展示の進入（内から） {slit_html}</div>"
+            "<div class='tw'><table class='t'><tr><th>枠</th><th>進入</th><th>展示ST</th><th>展示タイム</th>"
+            + head + "<th>チルト</th><th>部品交換など</th></tr>" + rows + "</table></div>"
+            "<div class='note'>赤字＝その項目で一番良い艇／進入が枠と違う艇（↑内へ ↓外へ）／フライング(F)。タイムは小さいほど速い。</div>")
+
+
+@st.fragment(run_every=30)
+def wait_for_exhibition(jcd, rno, hd, deadline):
+    """展示がまだ出ていない間、30秒ごとに直前情報を確認し、出たら画面全体を自動で更新する。"""
+    left = service.minutes_to_deadline(deadline, hd)
+    if left is None or left < 0:
+        return
+    if left > 45:
+        st.caption(f"⏳ 展示は締切の15〜30分前に出ます（締切まであと{left}分）。45分前になったら自動で確認を始めます。")
+        return
+    pv = service.preview_cached(jcd, rno, hd)
+    if pv and any(b.get("ex_time") for b in pv["boats"].values()):
+        st.rerun()
+    st.caption(f"⏳ 展示が出るのを自動で確認中…（{service.now_jst():%H:%M:%S} 確認・締切まであと{left}分）出たら自動で予想を更新します。")
+
+
+# ----------------------------------------------------
+# 状態
+# ----------------------------------------------------
+TODAY = service.today_hd()
+ss = st.session_state
+ss.setdefault("tab", "開催一覧")
+ss.setdefault("hd", TODAY)
+ss.setdefault("jcd", None)
+ss.setdefault("rno", 1)
+ss.setdefault("style", formation.DEFAULT_STYLE)
+ss.setdefault("ai_results", {})
+
+# URLに ?hd=20261125&jcd=5&rno=1 を付けると、その日・その場・そのレースを直接開ける
+if not ss.get("_query_read"):
+    ss["_query_read"] = True
+    q = st.query_params
+    try:
+        if q.get("hd") and len(q["hd"]) == 8:
+            datetime.datetime.strptime(q["hd"], "%Y%m%d")
+            ss.hd = q["hd"]
+        if q.get("jcd") and int(q["jcd"]) in VENUES:
+            ss.jcd, ss.tab = int(q["jcd"]), "予想"
+            if q.get("rno") and 1 <= int(q["rno"]) <= 12:
+                ss.rno = int(q["rno"])
+    except ValueError:
         pass
 
-    return venue_status, deadline_list
 
-def fetch_racelist(jcd: str, rno: int, hd: str):
-    url = f"https://www.boatrace.jp/owpc/pc/race/racelist?rno={rno}&jcd={jcd}&hd={hd}"
-    try:
-        res = session.get(url, headers=CUSTOM_HEADERS, timeout=8)
-        res.encoding = res.apparent_encoding
-        soup = BeautifulSoup(res.text, "html.parser")
-        table = soup.find("div", class_="table1")
-        if not table:
-            return None, "出走表が見つかりませんでした。"
-        rows = table.find_all("tbody")
-        racers = []
-        for i, row in enumerate(rows[:6], 1):
-            racers.append(f"【{i}号艇】: " + " ".join(row.get_text().split()))
-        return "\n".join(racers), None
-    except Exception as e:
-        return None, f"出走表取得エラー: {str(e)}"
-
-def fetch_beforeinfo(jcd: str, rno: int, hd: str):
-    url = f"https://www.boatrace.jp/owpc/pc/race/beforeinfo?rno={rno}&jcd={jcd}&hd={hd}"
-    try:
-        res = session.get(url, headers=CUSTOM_HEADERS, timeout=8)
-        res.encoding = res.apparent_encoding
-        soup = BeautifulSoup(res.text, "html.parser")
-        weather_box = soup.find("div", class_="weather1")
-        weather_text = " ".join(weather_box.get_text().split()) if weather_box else "気象情報なし"
-        tables = soup.find_all("div", class_="table1")
-        info_text = "".join(["\n" + " ".join(t.get_text().split()) for t in tables])
-        if not info_text:
-            return None, "直前情報がまだ公開されていません。"
-        return f"【水面・気象】: {weather_text}\n【直前展示データ】:\n{info_text}", None
-    except Exception as e:
-        return None, f"直前情報取得エラー: {str(e)}"
-
-# ----------------------------------------------------
-# Gemini AI 予想エンジン (gemini-3.6-flash)
-# ----------------------------------------------------
-# gemini-3.7-flash は無料枠が 20リクエスト/日 と狭いため既定にしない。
-# 従量課金を有効にした場合は環境変数 GEMINI_MODEL で切り替えられる。
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
+def go_race(jcd, rno):
+    ss.jcd, ss.rno, ss.tab = jcd, rno, "予想"
 
 
-def analyze_with_gemini(api_key: str, venue_name: str, rno: int, racelist_data: str, before_data: str, focus_type: str):
-    client = genai.Client(api_key=api_key)
-    prompt = f"""
-あなたは競艇の回収率最大化を追求するプロ予想AIです。
-以下の出走表、直前情報（展示タイム・スタート展示進入・気象風速・チルト）を徹底分析し、
-指定スタンス【{focus_type}】に最適な【三連単フォーメーション】を算出してください。
+def hd_label(hd):
+    d = datetime.date(int(hd[:4]), int(hd[4:6]), int(hd[6:]))
+    return f"{d.month}/{d.day}（{'月火水木金土日'[d.weekday()]}）"
 
-### 対象レース
-- 開催場: ボートレース{venue_name} 第{rno}R
-- スタンス: {focus_type}
 
-### 取得データ
-【出走表】:
-{racelist_data}
+show_html(f"""<div class="top-bar"><span class="t">🚤 競艇AI予想</span>
+<span class="d">{hd_label(ss.hd)}{'・本日' if ss.hd == TODAY else ''}</span></div>""")
 
-【直前情報（展示・気象）】:
-{before_data}
-
----
-### 出力フォーマット（Markdown形式）
-
-## 1. 進入隊形予想 & 1マーク展開シミュレーション
-- スリット隊形予想（例: 123/456）とイン逃げ信頼度（S/A/B/C）
-- 展開の攻め手となる艇と仕掛けシナリオ
-
-## 2. 展示タイム・機力評価
-- 各艇の伸び足・回り足・出足のハイライト
-
-## 3. 🎯 厳選 三連単フォーメーション買い目
-
-### 【本線フォーメーション】（4〜8点）
-- 買い目: `1 - 2,3 - 2,3,4`
-- 推奨資金配分比率（合計100%）
-
-### 【抑え / 穴狙いフォーメーション】（2〜4点）
-- 買い目: `3 - 1,4 - 1,4,5`
-- 狙う理由
-
-## 4. 💡 勝負の決め手
-"""
-    # 需要が集中すると 503 UNAVAILABLE が返るが数秒で復帰することが多いため、
-    # 指数バックオフで数回リトライしてから諦める。
-    last_error = None
-    delay = 1.0
-    for attempt in range(4):
-        try:
-            response = client.models.generate_content(
-                model=GEMINI_MODEL,
-                contents=prompt,
-            )
-            return response.text
-        except genai_errors.ServerError as e:
-            last_error = e
-        except genai_errors.ClientError as e:
-            if getattr(e, "code", None) != 429:
-                raise  # 認証やモデル名の誤りは待っても直らない
-            last_error = e
-        if attempt < 3:
-            time.sleep(delay)
-            delay *= 2
-    raise last_error
-
-# ----------------------------------------------------
-# 状態管理
-# ----------------------------------------------------
-if "active_tab" not in st.session_state:
-    st.session_state.active_tab = "開催一覧"
-if "selected_jcd" not in st.session_state:
-    st.session_state.selected_jcd = "12"
-if "selected_rno" not in st.session_state:
-    st.session_state.selected_rno = 11
-if "racelist_data" not in st.session_state:
-    st.session_state.racelist_data = ""
-if "before_data" not in st.session_state:
-    st.session_state.before_data = ""
-if "prediction_result" not in st.session_state:
-    st.session_state.prediction_result = ""
-
-api_key = st.secrets.get("GEMINI_API_KEY", os.environ.get("GEMINI_API_KEY", ""))
-
-# ----------------------------------------------------
-# 公式ヘッダー
-# ----------------------------------------------------
-st.markdown("""
-<div class="br-top-bar">
-    <div class="br-logo-title">🚤 BOAT RACE <span style="font-size:1.05rem; font-weight:normal; margin-left:4px;">トップ</span></div>
-    <div class="br-sub-links">
-        <span>📍 ピン留め</span>
-        <span>💳 入金</span>
-        <span>📋 マイページ</span>
-    </div>
-</div>
-""", unsafe_allow_html=True)
-
-# 開催状況データを取得
-venue_status, deadline_list = fetch_all_venues_status(today_jst_str)
-
-# ナビゲーションタブ
-c_nav1, c_nav2, c_nav3 = st.columns([1, 1, 1.2])
-with c_nav1:
-    if st.button("🚩 開催一覧", type="primary" if st.session_state.active_tab == "開催一覧" else "secondary", use_container_width=True):
-        st.session_state.active_tab = "開催一覧"
+nav = st.columns(3)
+for col, name, label in zip(nav, ["開催一覧", "締切順", "予想"], ["🚩 開催一覧", "⏰ 締切順", "🎯 AI予想"]):
+    if col.button(label, type="primary" if ss.tab == name else "secondary", use_container_width=True, key=f"nav_{name}"):
+        ss.tab = name
         st.rerun()
-with c_nav2:
-    if st.button("⏰ 締切順", type="primary" if st.session_state.active_tab == "締切順" else "secondary", use_container_width=True):
-        st.session_state.active_tab = "締切順"
-        st.rerun()
-with c_nav3:
-    if st.button("🎯 AIフォーメーション予想", type="primary" if st.session_state.active_tab == "AI予想" else "secondary", use_container_width=True):
-        st.session_state.active_tab = "AI予想"
-        st.rerun()
+
+try:
+    schedule = load_schedule(ss.hd)
+except Exception as e:  # 取得元が全滅していても画面は出す
+    schedule = {"venues": [], "notes": [f"開催情報を取得できませんでした: {e}"]}
+venues = schedule["venues"]
+for n in schedule["notes"]:
+    st.warning(n)
 
 # ----------------------------------------------------
 # 画面1: 開催一覧
 # ----------------------------------------------------
-if st.session_state.active_tab == "開催一覧":
-    cols = st.columns(4)
-    for idx, v in enumerate(VENUES):
-        col = cols[idx % 4]
-        code = v["code"]
-        stat = venue_status.get(code, {})
-        
-        # 開催中
-        if stat.get("status") == "active":
-            box_cls = "card-omura-box" if code == "24" else "card-night-box"
-            head_cls = "card-omura-head" if code == "24" else "card-night-head"
-            icon = "🌟 " if code == "24" else ("🌙 " if v["type"] == "ナイター" else "")
-            badge = f'<span class="badge-g3">{stat["grade"]}</span>' if stat.get("grade") else ""
-            
-            card_html = f"""
-            <div class="{box_cls}">
-                <div class="{head_cls}">
-                    {badge}{icon}{v['name']}
-                </div>
-                <div style="text-align:center; padding:3px 2px; background:white;">
-                    <div style="font-size:0.75rem; color:#475569;">{stat['day_text']}</div>
-                    <div style="font-weight:900; color:#dc2626; font-size:0.88rem;">{stat['next_rno']}R {stat['deadline']}</div>
-                </div>
-            </div>
-            """
-            col.markdown(card_html, unsafe_allow_html=True)
-            if col.button("選択", key=f"btn_act_{code}", use_container_width=True):
-                st.session_state.selected_jcd = code
-                st.session_state.selected_rno = stat["next_rno"]
-                st.session_state.active_tab = "AI予想"
-                st.rerun()
+if ss.tab == "開催一覧":
+    picked = st.date_input("開催日", value=datetime.date(int(ss.hd[:4]), int(ss.hd[4:6]), int(ss.hd[6:])), format="YYYY/MM/DD")
+    new_hd = picked.strftime("%Y%m%d")
+    if new_hd != ss.hd:
+        ss.hd = new_hd
+        ss.jcd = None
+        st.rerun()
 
-        # 発売終了
-        elif stat.get("status") == "closed":
-            badge = f'<span class="badge-g3">{stat["grade"]}</span>' if stat.get("grade") else ""
-            card_html = f"""
-            <div class="card-closed-box">
-                <div class="card-closed-head">
-                    {badge}{v['name']} {stat['day_text']}
-                </div>
-                <div class="card-closed-body">
-                    発売終了
-                </div>
-            </div>
-            """
-            col.markdown(card_html, unsafe_allow_html=True)
-            if col.button("終了", key=f"btn_cls_{code}", disabled=True, use_container_width=True):
-                pass
-
-        # 非開催
+    if not venues:
+        st.info("この日の開催はありません。")
+    show_html('<div class="note">場を選ぶと、次に締切を迎えるレースの予想画面を開きます（「終了」の場は結果の確認ができます）。</div>')
+    cols = st.columns(2)
+    for i, v in enumerate(venues):
+        rno, dl = service.next_race(v.get("deadlines") or {}, ss.hd)
+        icon = {"ナイター": "🌙 ", "モーニング": "🌅 ", "ミッドナイト": "🌃 "}.get(v.get("time_zone"), "")
+        grade = f"[{v['grade']}] " if v.get("grade") and v["grade"] != "一般" else ""
+        if v.get("cancelled"):
+            state = "中止"
+        elif rno:
+            state = f"次{rno}R {dl}"
+        elif ss.hd < TODAY or v.get("deadlines"):
+            state = "終了"
         else:
-            card_html = f"""
-            <div class="card-none-box">
-                <div>{v['name']}</div>
-                <div style="margin-top:2px;">--</div>
-            </div>
-            """
-            col.markdown(card_html, unsafe_allow_html=True)
-            if col.button("--", key=f"btn_none_{code}", disabled=True, use_container_width=True):
-                pass
+            state = "出走表"
+        label = f"{icon}{grade}{v['name']}　{state}"
+        if cols[i % 2].button(label, key=f"v_{v['jcd']}", use_container_width=True, disabled=bool(v.get("cancelled"))):
+            go_race(v["jcd"], rno or (12 if state == "終了" else 1))
+            st.rerun()
 
 # ----------------------------------------------------
-# 画面2: 締切順一覧
+# 画面2: 締切順
 # ----------------------------------------------------
-elif st.session_state.active_tab == "締切順":
-    if deadline_list:
-        for idx, item in enumerate(deadline_list):
-            is_first = (idx == 0)
-            urgent_cls = "dl-row-urgent" if is_first else ""
-            left_bg = "background: linear-gradient(180deg, #38bdf8 0%, #0284c7 100%); color:white;" if item["jcd"] == "24" else "background: #c7d2fe; color:#1e1b4b;"
-            badge_html = f'<span class="badge-g3">{item["grade"]}</span>' if item.get("grade") else ""
-            
-            c_card, c_btn = st.columns([3.5, 1])
-            with c_card:
-                st.markdown(f"""
-                <div class="dl-row {urgent_cls}">
-                    <div class="dl-left-part" style="{left_bg}">
-                        <div>{badge_html}{item['name']} 🌙</div>
-                        <div style="font-size:0.75rem; font-weight:normal;">{item['day_text']}</div>
-                    </div>
-                    <div class="dl-right-part">
-                        <div style="font-weight:900; font-size:0.98rem; color:#0f172a;">{item['rno']}R {item['race_name']}</div>
-                        <div style="font-weight:900; color:#dc2626; font-size:0.9rem;">締切予定時刻 {item['deadline']}</div>
-                    </div>
-                </div>
-                """, unsafe_allow_html=True)
-            with c_btn:
-                if st.button("予想へ", key=f"dl_btn_{item['jcd']}_{item['rno']}", type="primary" if is_first else "secondary", use_container_width=True):
-                    st.session_state.selected_jcd = item["jcd"]
-                    st.session_state.selected_rno = item["rno"]
-                    st.session_state.active_tab = "AI予想"
-                    st.rerun()
+elif ss.tab == "締切順":
+    ups = service.upcoming(venues, ss.hd)
+    if not ups:
+        if ss.hd >= TODAY and venues and not any(v.get("deadlines") for v in venues):
+            st.info("締切時刻のデータがまだ届いていません（当日の朝に更新されます）。開催一覧から場を選ぶと出走表と予想は見られます。")
+        else:
+            st.info("これから締切を迎えるレースはありません。開催一覧から日付や場を選んでください。")
+    now = service.now_jst()
+    for item in ups[:30]:
+        mins = ""
+        if ss.hd == TODAY:
+            h, m = map(int, item["deadline"].split(":"))
+            left = (h * 60 + m) - (now.hour * 60 + now.minute)
+            mins = f"（あと{left}分）"
+        grade = f"[{item['grade']}] " if item.get("grade") and item["grade"] != "一般" else ""
+        if st.button(f"⏰ {item['deadline']}　{grade}{item['name']} {item['rno']}R　{mins}",
+                     key=f"u_{item['jcd']}_{item['rno']}", use_container_width=True):
+            go_race(item["jcd"], item["rno"])
+            st.rerun()
+
+# ----------------------------------------------------
+# 画面3: AI予想
+# ----------------------------------------------------
+else:
+    open_jcds = [v["jcd"] for v in venues if not v.get("cancelled")] or sorted(VENUES)
+    if ss.jcd not in open_jcds:
+        ss.jcd = open_jcds[0]
+    c1, c2, c3 = st.columns([1.2, 0.9, 1.3])
+    jcd = c1.selectbox("場", open_jcds, index=open_jcds.index(ss.jcd), format_func=lambda j: f"{VENUES[j]}")
+    rno = c2.selectbox("レース", list(range(1, 13)), index=int(ss.rno) - 1, format_func=lambda r: f"{r}R")
+    style = c3.selectbox("買い方", list(formation.STYLES), index=list(formation.STYLES).index(ss.style),
+                         help="的中重視: 20点前後まで広く買う / バランス: 12点前後 / 少点数: 6点前後に絞る")
+    if (jcd, rno, style) != (ss.jcd, ss.rno, ss.style):
+        ss.jcd, ss.rno, ss.style = jcd, rno, style
+        st.rerun()
+    hd = ss.hd
+
+    if st.button("🔄 最新の展示・オッズに更新", use_container_width=True):
+        service.clear_live(jcd, rno, hd)
+        st.rerun()
+
+    try:
+        with st.spinner("出走表・直前情報（展示）・オッズ・本日の結果を取得中...（10秒ほどかかることがあります）"):
+            bundle = service.get_bundle(jcd, rno, hd)
+    except SourceError as e:
+        st.error(str(e))
+        st.stop()
+    race = bundle["race"]
+    pv = race["preview"]
+    live = model.has_preview(race)
+    original = bundle["original"] if live else None
+    odds = bundle["odds"]
+    results = bundle["results"]
+    stadium = bundle["stadium"]
+    trend = service.trend(results, rno)
+    result = next((r for r in results if r["rno"] == rno), None)
+    analysis = service.analyze(race, style, odds)
+    pred = analysis["pred"]
+
+    venue_info = next((v for v in venues if v["jcd"] == jcd), {})
+    grade = race.get("grade") or venue_info.get("grade", "")
+    badge = f'<span class="badge">{esc(grade)}</span>' if grade and grade != "一般" else ""
+    dl = race.get("deadline") or (venue_info.get("deadlines") or {}).get(rno, "")
+    show_html(f"""<div class="race-head"><div class="dl">締切予定<br><b>{esc(dl or '--:--')}</b></div>
+<div class="v">{esc(VENUES[jcd])} {rno}R{badge}</div>
+<div class="s">{esc(race.get('title', ''))}　{esc(race.get('subtitle', ''))}　{esc(venue_info.get('day_text', ''))}
+{'　※進入固定' if race.get('fixed_course') else ''}</div></div>""")
+    if race.get("note"):
+        st.warning(race["note"])
+
+    # ---------- 直前情報（展示）----------
+    show_html('<div class="sec">⏱ 直前情報（展示）</div>')
+    if live:
+        show_html(f'<div class="card">{preview_table(race, pv, original)}</div>')
+        st.success("✅ 展示タイム・スタート展示・風を反映した予想です。")
     else:
-        st.info("現在受付中のレースはありません。")
+        st.info("展示（直前情報）はまだ出ていません。いまは出走表だけの予想です。")
+        wait_for_exhibition(jcd, rno, hd, dl)
 
-# ----------------------------------------------------
-# 画面3: AIフォーメーション予想
-# ----------------------------------------------------
-elif st.session_state.active_tab == "AI予想":
-    curr_v = next((v for v in VENUES if v["code"] == st.session_state.selected_jcd), VENUES[0])
-    
-    st.markdown(f"""
-    <div style="background:#0066cc; color:white; padding:10px 12px; border-radius:6px; font-weight:bold; margin-bottom:12px; display:flex; justify-content:space-between; align-items:center;">
-        <span style="font-size:1.1rem;">📍 ボートレース{curr_v['name']} 【第{st.session_state.selected_rno}R】</span>
-        <span style="font-size:0.85rem;">{today_jst_str}</span>
-    </div>
-    """, unsafe_allow_html=True)
+    # ---------- AI（Claude Opus 5.5 / Gemini）----------
+    ai_key = (hd, jcd, rno, style, live)
+    ai_result = ss.ai_results.get(ai_key)
+    provider, api_key = ai.pick_provider(get_secret("ANTHROPIC_API_KEY"), get_secret("GEMINI_API_KEY"))
+    ai_name = ai.PROVIDER_LABELS.get(provider, "AI")
+    memo = st.text_area("AIに伝えたいメモ（任意）", key=f"memo_{hd}_{jcd}_{rno}", height=68,
+                        placeholder="例: 3号艇は前検から伸びが良いらしい / 1号艇は足落ち など。気づいたことがあれば書くとAIが考慮します。")
+    if live and not ai_result and ss.ai_results.get((hd, jcd, rno, style, False)):
+        st.warning("展示が出ました。もう一度AIボタンを押すと、展示を反映した買い目に更新されます。")
+    if st.button("🤖 AIに展開を読んでもらい、最終の買い目を出す", type="primary", use_container_width=True):
+        if not provider:
+            st.error("AIのAPIキーが設定されていません。Streamlit の Secrets に ANTHROPIC_API_KEY（Claude Opus 5.5 用）を登録してください。"
+                     "下のデータ予想はAPIキーなしで使えます。")
+        else:
+            with st.spinner(f"🤖 {ai_name} が進入・スタート・機力・風から展開を予想中...（30秒〜1分半ほど）"):
+                try:
+                    ai_result = ai.predict_with_ai(provider, api_key, race, analysis, style, original, stadium, trend, odds, memo)
+                    ss.ai_results[ai_key] = ai_result
+                except ai.AIError as e:
+                    st.error(f"{e}　下のデータ予想は使えます。")
+                except Exception as e:
+                    st.error(f"AI予想でエラーが出ました: {e}　下のデータ予想は使えます。")
 
-    c_rno, c_stance = st.columns([1, 1.5])
-    with c_rno:
-        st.session_state.selected_rno = st.selectbox("レース番号", list(range(1, 13)), index=st.session_state.selected_rno - 1)
-    with c_stance:
-        focus_type = st.selectbox("予想スタンス", ["バランス（本線＋抑え）", "本命重視（イン逃げ・点数絞り）", "高配当狙い（まくり・展開波乱）"])
+    # ---------- 買い目 ----------
+    if ai_result:
+        cards = [formation.describe(ai_result["main"], pred["P"], odds, "本線")]
+        if ai_result.get("sub"):
+            sub_card = formation.describe(ai_result["sub"], pred["P"], odds, "抑え", exclude=formation.expand(ai_result["main"]))
+            if sub_card["points"]:
+                cards.append(sub_card)
+        source_label = f"🤖 AI（{ai.PROVIDER_LABELS.get(ai_result.get('provider'), 'AI')}）の最終予想"
+    else:
+        cards = analysis["cards"]
+        source_label = "📊 データ予想（統計AI）"
 
-    c_btn1, c_btn2 = st.columns([1, 1])
-    with c_btn1:
-        if st.button("📡 公式データを取得", use_container_width=True):
-            with st.spinner("出走表・展示情報を取得中..."):
-                r_data, _ = fetch_racelist(st.session_state.selected_jcd, st.session_state.selected_rno, today_jst_str)
-                b_data, _ = fetch_beforeinfo(st.session_state.selected_jcd, st.session_state.selected_rno, today_jst_str)
-                st.session_state.racelist_data = r_data or ""
-                st.session_state.before_data = b_data or ""
-                st.success("データ取得完了！")
+    if result:
+        hit = service.check_hit(cards, result["top3"])
+        res_txt = (f"結果 {ticket_html('-'.join(map(str, result['top3'])))} "
+                   f"{esc(result.get('technique', ''))}　3連単 {result['payout']:,}円" if result.get("payout")
+                   else f"結果 {ticket_html('-'.join(map(str, result['top3'])))}")
+        if hit:
+            show_html(f'<div class="hit">🎯 的中！（{esc(hit)}）　{res_txt}</div>')
+        else:
+            show_html(f'<div class="miss">ハズレ　{res_txt}</div>')
 
-    with c_btn2:
-        if st.button("🔥 AI予想を実行", type="primary", use_container_width=True):
-            if not api_key:
-                st.error("Gemini APIキーを設定してください。")
-            else:
-                if not st.session_state.racelist_data:
-                    with st.spinner("レースデータを自動取得中..."):
-                        r_data, _ = fetch_racelist(st.session_state.selected_jcd, st.session_state.selected_rno, today_jst_str)
-                        b_data, _ = fetch_beforeinfo(st.session_state.selected_jcd, st.session_state.selected_rno, today_jst_str)
-                        st.session_state.racelist_data = r_data or "出走表取得エラー"
-                        st.session_state.before_data = b_data or "直前情報なし"
+    show_html(f'<div class="sec">🎯 買い目　<small style="font-weight:600;color:#475569;">{source_label}</small></div>')
+    if ai_result:
+        trust = f"　イン信頼度 <b>{esc(ai_result['in_trust'])}</b>" if ai_result.get("in_trust") else ""
+        slit = f"　進入予想 <b>{esc(ai_result['slit'])}</b>" if ai_result.get("slit") else ""
+        show_html(f"""<div class="card"><b>{esc(ai_result['summary'])}</b>
+<div class="note" style="margin-top:4px;">{trust}{slit}</div></div>""")
+    total_pts = sum(c["points"] for c in cards)
+    total_prob = formation.coverage(pred["P"], [tuple(map(int, t["ticket"].split("-"))) for c in cards for t in c["tickets"]])
+    for i, c in enumerate(cards):
+        show_html(formation_card(c, sub=(i > 0)))
+    show_html(f"""<div class="card">合計 <b>{total_pts}点</b>（1点100円なら <b>{total_pts * 100:,}円</b>）
+どれかが当たる見込み <b>約{total_prob * 100:.0f}%</b>
+<div class="note">見込みは過去レースの統計から計算した目安です。1点ごとの％は「買い目を1点ずつ見る」で確認できます。</div></div>""")
 
-                with st.spinner("🤖 Gemini 3.6 Flash がスリット隊形・展示・機力をシミュレーション中..."):
-                    try:
-                        res = analyze_with_gemini(
-                            api_key=api_key,
-                            venue_name=curr_v["name"],
-                            rno=st.session_state.selected_rno,
-                            racelist_data=st.session_state.racelist_data,
-                            before_data=st.session_state.before_data,
-                            focus_type=focus_type
-                        )
-                        st.session_state.prediction_result = res
-                    except Exception as e:
-                        st.error(f"予想生成エラー: {str(e)}")
+    with st.expander("❓ フォーメーションの読み方・買い方"):
+        st.markdown("""
+**フォーメーション**は「1着に来そうな艇」「2着に来そうな艇」「3着に来そうな艇」をそれぞれ選んで、まとめて買う方法です。
 
-    if st.session_state.prediction_result:
-        st.markdown("---")
-        st.markdown(st.session_state.prediction_result)
+例：1着 **1** ▶ 2着 **2・3** ▶ 3着 **2・3・4**
+→ 1-2-3、1-2-4、1-3-2、1-3-4 の **4点**（同じ艇は2回使えないので 1-2-2 などは自動で除かれます）
+
+**買う手順（テレボート／公式アプリ）**
+1. 場とレースを選ぶ
+2. 勝式で **「3連単」**、方式で **「フォーメーション」** を選ぶ
+3. 1着の列・2着の列・3着の列で、上の表示と同じ艇番をタップ
+4. 表示された点数がこの画面の点数と同じことを確認して、1点あたりの金額を入れる
+
+**本線**は一番ありそうな展開、**抑え**は本線が崩れた時のための保険です。両方買うのが基本ですが、予算が少ない時は本線だけでも構いません。
+""")
+
+    # ---------- 展開 ----------
+    if ai_result:
+        show_html('<div class="sec">🌊 AIの展開予想</div>')
+        show_html(f"""<div class="card">{esc(ai_result['scenario'])}
+<div style="margin-top:8px;"><b>💡 決め手</b>　{esc(ai_result['key_point'])}</div></div>""")
+
+    show_html('<div class="sec">📊 各艇の評価</div>')
+    show_html(prob_table(race, analysis, ai_result))
+    show_html('<div class="note">◎本命 ○対抗 ▲単穴 △連下。確率はデータ予想モデルの計算値です。</div>')
+
+    with st.expander("もっと当てやすい券種で買うなら（2連単・2連複・3連複・単勝）"):
+        show_html('<div class="note">3連単は1〜3着を順番どおり当てる一番むずかしい券種です。当たりやすさを優先するなら下の券種もあります。</div>')
+        desc = {"単勝": "1着を当てる", "2連単": "1着と2着を順番どおり", "2連複": "1着と2着（順番は不問）", "3連複": "1〜3着（順番は不問）"}
+        html_o = ""
+        for kind, items in analysis["others"].items():
+            tks = "".join(
+                f'<span class="tk">{"".join(chip(x, small=True) for x in t["ticket"].replace("=", "-").split("-"))} '
+                f'<small>約{t["prob"] * 100:.0f}%</small></span>' for t in items)
+            html_o += f'<div style="margin-bottom:6px;"><b>{kind}</b> <span class="note">{desc[kind]}</span><br>{tks}</div>'
+        show_html(f'<div class="card">{html_o}</div>')
+
+    if ai_result:
+        with st.expander("データ予想（統計AI）だけの買い目も見る"):
+            for i, c in enumerate(analysis["cards"]):
+                show_html(formation_card(c, sub=(i > 0)))
+
+    # ---------- データ ----------
+    show_html('<div class="sec">📋 集めたデータ</div>')
+    with st.expander("出走表（勝率・モーター・今節成績）", expanded=True):
+        show_html(program_table(race, pred["courses"]))
+        stats_meta = model.load_racer_stats().get("meta", {})
+        show_html(f'<div class="note">「このコースの1着率」は過去約1年の実績（{esc(stats_meta.get("until", ""))}まで）。</div>')
+    if trend or stadium:
+        with st.expander("今日の傾向・この場のコース別成績"):
+            if trend:
+                kim = "　".join(f"{k} {v}回" for k, v in trend["kimarite"].items())
+                res_list = "".join(f'<span class="tk">{r["rno"]}R {ticket_html("-".join(map(str, r["top3"])))} <small>{esc(r.get("technique", ""))}</small></span>' for r in trend["list"])
+                show_html(f"""<div class="card"><b>今日ここまで {trend['races']}レース</b>：1号艇の1着 {trend['lane1_wins']}回　{esc(kim)}
+<div style="margin-top:6px;">{res_list}</div></div>""")
+            if stadium:
+                rows = ""
+                for c in range(1, 7):
+                    s = stadium["courses"].get(c)
+                    if s:
+                        kim = " ".join(f"{k}{v:.0f}%" for k, v in s["kimarite"].items() if v >= 5)
+                        rows += f"<tr><td>{chip(c)}</td><td>{s['place'][0]:.1f}%</td><td>{s['place'][1]:.1f}%</td><td>{s['place'][2]:.1f}%</td><td class='l'>{esc(kim)}</td></tr>"
+                show_html("<div class='tw'><table class='t'><tr><th>コース</th><th>1着</th><th>2着</th><th>3着</th><th>勝った時の決まり手</th></tr>"
+                            + rows + "</table></div><div class='note'>公式サイト集計（最近3か月）</div>")
+    if ai_result and ai_result.get("race_text"):
+        with st.expander("AIに渡した資料（全文）"):
+            st.text(ai_result["race_text"])
+        usage = ai_result.get("usage")
+        if usage:
+            cost = f"（約{usage['cost_usd']:.2f}ドル）" if usage.get("cost_usd") is not None else ""
+            st.caption(f"今回のAI利用量: 入力 {usage['input_tokens']:,} ／ 出力 {usage['output_tokens']:,} トークン{cost}　モデル: {usage['model']}")
+
+    show_html(f"""<div class="note" style="margin-top:10px;">
+データ元: {esc(race.get('source', ''))}{' / ' + esc(pv.get('source', '')) if pv else ''}{' / BOATCAST' if original else ''}<br>
+🔗 <a href="{sources.official_url('racelist', jcd, rno, hd)}" target="_blank">公式サイトの出走表</a>
+<a href="{sources.official_url('odds3t', jcd, rno, hd)}" target="_blank">公式オッズ</a>
+<a href="{sources.biyori_url(jcd, rno, hd)}" target="_blank">ボートレース日和で見る</a></div>""")
+
+show_html("""<div class="note" style="margin-top:18px;text-align:center;">
+予想は的中を保証するものではありません。舟券は20歳以上、無理のない金額で。</div>""")
