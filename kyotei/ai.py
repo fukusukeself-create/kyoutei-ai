@@ -1,7 +1,10 @@
-"""Gemini による展開予想と最終的な買い目の決定。
+"""AI（Claude / Gemini）による展開予想と最終的な買い目の決定。
 
-集めたデータ一式と、データ予想モデルの確率を文章にまとめて Gemini に渡し、
+集めたデータ一式と、データ予想モデルの確率を文章にまとめてAIに渡し、
 決まった形のJSON（展開・各艇の評価・本線/抑えのフォーメーション）で返してもらう。
+
+既定は Claude Opus 5.5（ANTHROPIC_API_KEY があればこちら）。
+Anthropic のキーが無く GEMINI_API_KEY だけある時は Gemini を使う。
 """
 from __future__ import annotations
 
@@ -13,9 +16,30 @@ import time
 from . import formation, model
 from .sources import VENUES
 
+CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-opus-5-5")
+# 考える深さ。low / medium / high / xhigh / max。深いほど時間と料金がかかる。
+CLAUDE_EFFORT = os.environ.get("CLAUDE_EFFORT", "high")
+# 料金の目安を出すための単価（100万トークンあたりのドル: 入力, 出力）。
+CLAUDE_PRICES = {"claude-opus-5-5": (4.0, 20.0)}
+
 # gemini-3.7-flash は無料枠が 20リクエスト/日 と狭いため既定にしない。
 # 従量課金を有効にした場合は環境変数 GEMINI_MODEL で切り替えられる。
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
+
+PROVIDER_LABELS = {"claude": "Claude Opus 5.5", "gemini": "Gemini"}
+
+
+class AIError(Exception):
+    """AIの呼び出しに失敗した時の、利用者向けの説明つきエラー。"""
+
+
+def pick_provider(anthropic_key: str = "", gemini_key: str = ""):
+    """使うAIを決める。Anthropic のキーがあれば Claude、無ければ Gemini。どちらも無ければ None。"""
+    if anthropic_key:
+        return "claude", anthropic_key
+    if gemini_key:
+        return "gemini", gemini_key
+    return None, ""
 
 
 def _f(v, fmt="{:.2f}", none="-"):
@@ -147,18 +171,61 @@ OUTPUT_SPEC = """{
 }"""
 
 
-def build_prompt(race_text: str, style: str, memo: str = "") -> str:
+def _boat_list():
+    return {"type": "array", "items": {"type": "integer", "enum": [1, 2, 3, 4, 5, 6]}}
+
+
+def _bet_schema():
+    return {
+        "type": "object",
+        "properties": {"first": _boat_list(), "second": _boat_list(), "third": _boat_list(), "reason": {"type": "string"}},
+        "required": ["first", "second", "third", "reason"],
+        "additionalProperties": False,
+    }
+
+
+# Claude の構造化出力に渡すJSONスキーマ（この形のJSONが必ず返る）。中身の意味は OUTPUT_SPEC と同じ。
+OUTPUT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "summary": {"type": "string"},
+        "in_trust": {"type": "string", "enum": ["S", "A", "B", "C"]},
+        "slit": {"type": "string"},
+        "scenario": {"type": "string"},
+        "boats": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "boat": {"type": "integer", "enum": [1, 2, 3, 4, 5, 6]},
+                    "mark": {"type": "string", "enum": ["◎", "○", "▲", "△", ""]},
+                    "comment": {"type": "string"},
+                },
+                "required": ["boat", "mark", "comment"],
+                "additionalProperties": False,
+            },
+        },
+        "main": _bet_schema(),
+        "sub": _bet_schema(),
+        "key_point": {"type": "string"},
+    },
+    "required": ["summary", "in_trust", "slit", "scenario", "boats", "main", "sub", "key_point"],
+    "additionalProperties": False,
+}
+
+
+def build_instructions(style: str) -> str:
+    """AIへの指示（レースによらず同じ部分）。"""
     main_pts, sub_pts = formation.STYLES.get(style, formation.STYLES[formation.DEFAULT_STYLE])
-    memo_block = f"\n■利用者のメモ（参考情報として考慮する）\n{memo.strip()}\n" if memo and memo.strip() else ""
     return f"""あなたはボートレース（競艇）の予想を専門とするAIです。
-下の資料を全部読み、このレースの3連単を「当てる」ことを最優先に予想してください。
+利用者が渡すレース資料を全部読み、そのレースの3連単を「当てる」ことを最優先に予想してください。
 配当の高さや回収率は考えなくてよく、実際に来る可能性が高い買い目を選ぶこと。
 
 # 予想の進め方
 1. 進入隊形を決める（スタート展示の進入があればそれを重視。進入固定なら枠なり）。
 2. スタート（展示ST・平均ST・F持ち）と機力（展示タイム・オリジナル展示・モーター・今節成績）から、1マークの展開を組み立てる。
 3. 風・波・この場のコース傾向・本日の決まり手の傾向で補正する。
-4. データ予想モデルの確率は過去の統計から出した土台。基本はこれを尊重し、資料から読み取れる明確な理由がある時だけ動かす。
+4. データ予想モデルの確率は過去約6万レースの統計から出した土台。基本はこれを尊重し、資料から読み取れる明確な理由がある時だけ動かす。
 5. 最後に買い目をフォーメーションで決める。
 
 # 買い目のルール
@@ -168,12 +235,20 @@ def build_prompt(race_text: str, style: str, memo: str = "") -> str:
 - 当てることが目的なので、点数の上限までしっかり使ってよい。
 
 # 出力
-次のJSONだけを出力すること（説明文やコードブロック記号は不要）。boats は1〜6号艇の6件すべて。文章は日本語で、専門用語は短く分かりやすく。
-{OUTPUT_SPEC}
+次のJSONだけを出力すること（説明文やコードブロック記号は不要）。boats は1〜6号艇の6件すべて。
+読むのは競艇ファンの利用者本人。文章は日本語で、専門用語は短く分かりやすく。
+{OUTPUT_SPEC}"""
 
-# 資料
-{race_text}
-{memo_block}"""
+
+def build_user_message(race_text: str, memo: str = "") -> str:
+    """AIに渡す資料（レースごとに変わる部分）。"""
+    memo_block = f"\n\n■利用者のメモ（参考情報として考慮する）\n{memo.strip()}" if memo and memo.strip() else ""
+    return f"# 資料\n{race_text}{memo_block}"
+
+
+def build_prompt(race_text: str, style: str, memo: str = "") -> str:
+    """指示と資料を1本にまとめた文章（Gemini用）。"""
+    return build_instructions(style) + "\n\n" + build_user_message(race_text, memo)
 
 
 def parse_response(text: str) -> dict:
@@ -221,6 +296,57 @@ def parse_response(text: str) -> dict:
     return out
 
 
+def call_claude(api_key: str, system: str, user: str, model_name: str | None = None) -> tuple[str, dict]:
+    """Claude に予想させる。戻り値は (JSON文字列, 利用量)。"""
+    import anthropic
+
+    model_id = model_name or CLAUDE_MODEL
+    client = anthropic.Anthropic(api_key=api_key, timeout=300.0, max_retries=2)  # 429/5xx はSDKが自動で再試行する
+    try:
+        response = client.beta.messages.create(
+            model=model_id,
+            max_tokens=16000,
+            system=system,
+            messages=[{"role": "user", "content": user}],
+            thinking={"type": "adaptive"},
+            output_config={
+                "effort": CLAUDE_EFFORT,
+                "format": {"type": "json_schema", "schema": OUTPUT_SCHEMA},
+            },
+            # 安全フィルタの誤判定で止まった時に、別モデルで自動的にやり直してもらう
+            betas=["server-side-fallback-2026-07-01"],
+            fallbacks="default",
+        )
+    except anthropic.AuthenticationError as e:
+        raise AIError("Anthropic のAPIキーが正しくありません。Secrets の ANTHROPIC_API_KEY を確認してください。") from e
+    except anthropic.PermissionDeniedError as e:
+        raise AIError(f"このAPIキーでは {model_id} を使えません: {e.message}") from e
+    except anthropic.NotFoundError as e:
+        raise AIError(f"モデル {model_id} が見つかりません。CLAUDE_MODEL の指定を確認してください。") from e
+    except anthropic.RateLimitError as e:
+        raise AIError("Anthropic API の利用上限に達しました。少し待ってからもう一度押してください。") from e
+    except anthropic.APIStatusError as e:
+        if getattr(e, "type", "") == "billing_error" or "credit balance" in str(e.message).lower():
+            raise AIError("Anthropic API のクレジット残高が足りません。Claude Console の Billing で残高を確認してください。") from e
+        if e.status_code >= 500:
+            raise AIError(f"Anthropic 側が混み合っています（{e.status_code}）。少し待ってからもう一度押してください。") from e
+        raise AIError(f"Anthropic API エラー（{e.status_code}）: {e.message}") from e
+    except anthropic.APIConnectionError as e:
+        raise AIError("Anthropic API に接続できませんでした。少し待ってからもう一度押してください。") from e
+
+    if response.stop_reason == "refusal":
+        raise AIError("AIがこの依頼への回答を見送りました。データ予想の買い目を使ってください。")
+    if response.stop_reason == "max_tokens":
+        raise AIError("AIの回答が長くなりすぎて途中で切れました。もう一度押してください。")
+    text = next((b.text for b in response.content if b.type == "text"), "")
+    usage = {"model": response.model, "input_tokens": response.usage.input_tokens,
+             "output_tokens": response.usage.output_tokens}
+    price = CLAUDE_PRICES.get(response.model)
+    if price:
+        usage["cost_usd"] = (usage["input_tokens"] * price[0] + usage["output_tokens"] * price[1]) / 1_000_000
+    return text, usage
+
+
 def call_gemini(api_key: str, prompt: str, model_name: str | None = None) -> str:
     from google import genai
     from google.genai import errors as genai_errors
@@ -250,16 +376,24 @@ def call_gemini(api_key: str, prompt: str, model_name: str | None = None) -> str
     raise last_error
 
 
-def predict_with_gemini(api_key: str, race, analysis, style: str, original=None, stadium=None,
-                        trend=None, odds=None, memo: str = "") -> dict:
+def predict_with_ai(provider: str, api_key: str, race, analysis, style: str, original=None, stadium=None,
+                    trend=None, odds=None, memo: str = "") -> dict:
+    """AIに展開と最終の買い目を出してもらう。provider は "claude" か "gemini"。"""
     race_text = build_race_text(race, analysis, original, stadium, trend, odds)
-    prompt = build_prompt(race_text, style, memo)
     last = None
-    for _ in range(2):  # JSONが崩れていた時は1回だけやり直す
+    for _ in range(2):  # 返ってきた買い目が成立していない時は1回だけやり直す
+        usage = None
         try:
-            result = parse_response(call_gemini(api_key, prompt))
-            result["race_text"] = race_text
-            return result
+            if provider == "claude":
+                text, usage = call_claude(api_key, build_instructions(style), build_user_message(race_text, memo))
+            else:
+                text = call_gemini(api_key, build_prompt(race_text, style, memo))
+            result = parse_response(text)
         except (ValueError, json.JSONDecodeError) as e:
             last = e
-    raise ValueError(f"AIの返答を買い目に変換できませんでした: {last}")
+            continue
+        result["race_text"] = race_text
+        result["provider"] = provider
+        result["usage"] = usage
+        return result
+    raise AIError(f"AIの返答を買い目に変換できませんでした: {last}")

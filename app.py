@@ -3,7 +3,7 @@
   開催一覧 / 締切順 からレースを選ぶ
     → 公式サイトなどから出走表・直前情報・オッズ・当日結果を集める
     → データ予想モデル（過去約6万レースから学習）が3連単の確率を計算
-    → Gemini が展開を読んで最終的な買い目（フォーメーション）を決める
+    → AI（Claude Opus 5.5。キーが無ければ Gemini）が展開を読んで最終的な買い目（フォーメーション）を決める
 """
 import datetime
 import html
@@ -92,12 +92,12 @@ def load_schedule(hd):
     return service.get_schedule(hd)
 
 
-def get_api_key():
+def get_secret(name):
     try:
-        key = st.secrets.get("GEMINI_API_KEY", "")
+        value = st.secrets.get(name, "")
     except Exception:
-        key = ""
-    return key or os.environ.get("GEMINI_API_KEY", "")
+        value = ""
+    return value or os.environ.get(name, "")
 
 
 # ----------------------------------------------------
@@ -432,22 +432,26 @@ else:
         st.info("展示（直前情報）はまだ出ていません。いまは出走表だけの予想です。")
         wait_for_exhibition(jcd, rno, hd, dl)
 
-    # ---------- AI（Gemini）----------
+    # ---------- AI（Claude Opus 5.5 / Gemini）----------
     ai_key = (hd, jcd, rno, style, live)
     ai_result = ss.ai_results.get(ai_key)
-    api_key = get_api_key()
+    provider, api_key = ai.pick_provider(get_secret("ANTHROPIC_API_KEY"), get_secret("GEMINI_API_KEY"))
+    ai_name = ai.PROVIDER_LABELS.get(provider, "AI")
     memo = st.text_area("AIに伝えたいメモ（任意）", key=f"memo_{hd}_{jcd}_{rno}", height=68,
                         placeholder="例: 3号艇は前検から伸びが良いらしい / 1号艇は足落ち など。気づいたことがあれば書くとAIが考慮します。")
     if live and not ai_result and ss.ai_results.get((hd, jcd, rno, style, False)):
         st.warning("展示が出ました。もう一度AIボタンを押すと、展示を反映した買い目に更新されます。")
     if st.button("🤖 AIに展開を読んでもらい、最終の買い目を出す", type="primary", use_container_width=True):
-        if not api_key:
-            st.error("Gemini APIキーが設定されていません（Streamlitの Secrets に GEMINI_API_KEY を登録してください）。下のデータ予想はAPIキーなしで使えます。")
+        if not provider:
+            st.error("AIのAPIキーが設定されていません。Streamlit の Secrets に ANTHROPIC_API_KEY（Claude Opus 5.5 用）を登録してください。"
+                     "下のデータ予想はAPIキーなしで使えます。")
         else:
-            with st.spinner("🤖 AIが進入・スタート・機力・風から展開を予想中...（10〜30秒）"):
+            with st.spinner(f"🤖 {ai_name} が進入・スタート・機力・風から展開を予想中...（30秒〜1分半ほど）"):
                 try:
-                    ai_result = ai.predict_with_gemini(api_key, race, analysis, style, original, stadium, trend, odds, memo)
+                    ai_result = ai.predict_with_ai(provider, api_key, race, analysis, style, original, stadium, trend, odds, memo)
                     ss.ai_results[ai_key] = ai_result
+                except ai.AIError as e:
+                    st.error(f"{e}　下のデータ予想は使えます。")
                 except Exception as e:
                     st.error(f"AI予想でエラーが出ました: {e}　下のデータ予想は使えます。")
 
@@ -458,7 +462,7 @@ else:
             sub_card = formation.describe(ai_result["sub"], pred["P"], odds, "抑え", exclude=formation.expand(ai_result["main"]))
             if sub_card["points"]:
                 cards.append(sub_card)
-        source_label = "🤖 AI（Gemini）の最終予想"
+        source_label = f"🤖 AI（{ai.PROVIDER_LABELS.get(ai_result.get('provider'), 'AI')}）の最終予想"
     else:
         cards = analysis["cards"]
         source_label = "📊 データ予想（統計AI）"
@@ -554,6 +558,10 @@ else:
     if ai_result and ai_result.get("race_text"):
         with st.expander("AIに渡した資料（全文）"):
             st.text(ai_result["race_text"])
+        usage = ai_result.get("usage")
+        if usage:
+            cost = f"（約{usage['cost_usd']:.2f}ドル）" if usage.get("cost_usd") is not None else ""
+            st.caption(f"今回のAI利用量: 入力 {usage['input_tokens']:,} ／ 出力 {usage['output_tokens']:,} トークン{cost}　モデル: {usage['model']}")
 
     show_html(f"""<div class="note" style="margin-top:10px;">
 データ元: {esc(race.get('source', ''))}{' / ' + esc(pv.get('source', '')) if pv else ''}{' / BOATCAST' if original else ''}<br>

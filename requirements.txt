@@ -1,4 +1,5 @@
 streamlit
+anthropic>=2,<3
 google-genai
 requests
 beautifulsoup4

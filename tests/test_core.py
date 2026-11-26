@@ -332,3 +332,63 @@ def test_minutes_to_deadline():
     assert service.minutes_to_deadline("11:50", "20261125", now) == -10
     assert service.minutes_to_deadline("12:26", "20261126", now) is None
     assert service.minutes_to_deadline("", "20261125", now) is None
+
+
+# ---------------------------------------------------------------- AIの選択と呼び出し
+def test_pick_provider_prefers_claude():
+    assert ai.pick_provider("sk-ant-x", "gem") == ("claude", "sk-ant-x")
+    assert ai.pick_provider("", "gem") == ("gemini", "gem")
+    assert ai.pick_provider("", "") == (None, "")
+
+
+def test_instructions_are_stable_and_race_data_goes_in_user_message():
+    # 指示はレースによらず同じ（買い方ごとに1種類）。レースの資料とメモは利用者メッセージ側に入る
+    assert ai.build_instructions("バランス") == ai.build_instructions("バランス")
+    assert "8 点以内" in ai.build_instructions("バランス") and "12 点以内" in ai.build_instructions("的中重視")
+    user = ai.build_user_message("住之江 5R の資料", "3号艇が気配良し")
+    assert "住之江 5R の資料" in user and "3号艇が気配良し" in user
+    assert "住之江" not in ai.build_instructions("バランス")
+
+
+def test_output_schema_matches_what_parse_response_reads():
+    props = ai.OUTPUT_SCHEMA["properties"]
+    assert set(ai.OUTPUT_SCHEMA["required"]) == set(props) == {"summary", "in_trust", "slit", "scenario", "boats", "main", "sub", "key_point"}
+    assert props["main"]["required"] == ["first", "second", "third", "reason"]
+    sample = {"summary": "s", "in_trust": "A", "slit": "123/456", "scenario": "x", "key_point": "k",
+              "boats": [{"boat": n, "mark": "", "comment": "c"} for n in range(1, 7)],
+              "main": {"first": [1], "second": [2, 3], "third": [2, 3, 4], "reason": "r"},
+              "sub": {"first": [2], "second": [1], "third": [3], "reason": "r"}}
+    r = ai.parse_response(__import__("json").dumps(sample, ensure_ascii=False))
+    assert len(r["boats"]) == 6 and formation.expand(r["sub"]) == [(2, 1, 3)]
+
+
+def test_predict_with_ai_uses_claude_and_retries_once_on_invalid_bets(monkeypatch):
+    race = make_race()
+    analysis = service.analyze(race, "バランス")
+    calls = []
+    answers = ['{"main": {"first": [1], "second": [1], "third": [1]}}', GOOD]
+
+    def fake_claude(api_key, system, user, model_name=None):
+        calls.append((api_key, system, user))
+        return answers[len(calls) - 1], {"model": "claude-opus-5-5", "input_tokens": 4000, "output_tokens": 3000, "cost_usd": 0.076}
+
+    monkeypatch.setattr(ai, "call_claude", fake_claude)
+    monkeypatch.setattr(ai, "call_gemini", lambda *a, **k: pytest.fail("Geminiを呼んではいけない"))
+    r = ai.predict_with_ai("claude", "sk-ant-x", race, analysis, "バランス", memo="メモです")
+    assert len(calls) == 2 and r["provider"] == "claude" and r["usage"]["cost_usd"] == 0.076
+    assert r["main"]["first"] == [1] and "住之江 5R" in r["race_text"]
+    key, system, user = calls[0]
+    assert key == "sk-ant-x" and "8 点以内" in system and "メモです" in user and "住之江 5R" in user
+
+    monkeypatch.setattr(ai, "call_claude", lambda *a, **k: ("買い目なし", None))
+    with pytest.raises(ai.AIError):
+        ai.predict_with_ai("claude", "sk-ant-x", race, analysis, "バランス")
+
+
+def test_predict_with_ai_falls_back_to_gemini_provider(monkeypatch):
+    race = make_race()
+    analysis = service.analyze(race, "少点数")
+    monkeypatch.setattr(ai, "call_claude", lambda *a, **k: pytest.fail("Claudeを呼んではいけない"))
+    monkeypatch.setattr(ai, "call_gemini", lambda key, prompt, model_name=None: GOOD)
+    r = ai.predict_with_ai("gemini", "gem", race, analysis, "少点数")
+    assert r["provider"] == "gemini" and r["usage"] is None and r["main"]["second"] == [2, 3]
