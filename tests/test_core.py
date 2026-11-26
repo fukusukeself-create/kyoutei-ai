@@ -467,7 +467,7 @@ def test_analyze_uses_odds_only_after_exhibition():
     fifth = model.predict(race)["trifecta"][4][1]
     key = "-".join(map(str, fifth))
     odds = _odds_from(P, {key: 2.0})
-    live = service.analyze(race, "バランス", odds)
+    live = service.analyze(race, "バランス", odds, avoid_trigami=False)
     assert live["pred"]["market"] is True
     assert fifth in [t for _, t in live["pred"]["trifecta"][:3]]
     assert live["pred"]["P"][fifth[0] - 1, fifth[1] - 1, fifth[2] - 1] > P[fifth[0] - 1, fifth[1] - 1, fifth[2] - 1]
@@ -478,3 +478,30 @@ def test_analyze_uses_odds_only_after_exhibition():
     assert pre["pred"]["market"] is False and "P_model" not in pre["pred"]
     # オッズ無し
     assert service.analyze(race, "バランス", {})["pred"]["market"] is False
+
+
+# ---------------------------------------------------------------- トリガミ回避
+def test_suggest_trims_points_until_every_hit_is_profitable():
+    P = model.predict(make_race())["P"]
+    odds = _odds_from(P)                      # 市場がモデルと同じ見立て: 本命は数倍しかつかない
+    full = formation.suggest(P, "バランス", odds, avoid_trigami=False)
+    full_tk = formation.expand(full["main"]) + formation.expand(full["sub"])
+    assert full["trimmed_from"] is None
+    assert min(odds["-".join(map(str, t))] for t in full_tk) < len(full_tk)          # そのままだとトリガミがある
+    trimmed = formation.suggest(P, "バランス", odds)
+    tk = formation.expand(trimmed["main"]) + (formation.expand(trimmed["sub"]) if trimmed["sub"] else [])
+    assert trimmed["trimmed_from"] == len(full_tk) and 1 <= len(tk) < len(full_tk)
+    assert min(odds["-".join(map(str, t))] for t in tk) >= len(tk)                    # どれが当たっても購入額以上
+    card_total = service.analyze(make_race(), "バランス", odds)
+    assert formation.payout_summary(card_total["cards"])["trigami"] == []
+    assert card_total["trimmed_from"] and service.analyze(make_race(), "バランス", odds, avoid_trigami=False)["trimmed_from"] is None
+
+
+def test_suggest_keeps_points_when_no_trigami_or_no_odds():
+    P = model.predict(make_race())["P"]
+    rich = {k: 500.0 for k in _odds_from(P)}                                          # 全部高配当ならトリガミにならない
+    assert formation.suggest(P, "バランス", rich)["trimmed_from"] is None
+    assert formation.suggest(P, "バランス", rich) == formation.suggest(P, "バランス", rich, avoid_trigami=False)
+    assert formation.suggest(P, "バランス", None)["trimmed_from"] is None
+    partial = dict(list(rich.items())[:50])
+    assert formation.suggest(P, "バランス", partial)["trimmed_from"] is None           # オッズが欠けていたら絞らない

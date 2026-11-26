@@ -268,7 +268,7 @@ def trend(results: list[dict], before_rno: int) -> dict | None:
     }
 
 
-def analyze(race: dict, style: str = formation.DEFAULT_STYLE, odds: dict | None = None) -> dict:
+def analyze(race: dict, style: str = formation.DEFAULT_STYLE, odds: dict | None = None, avoid_trigami: bool = True) -> dict:
     """データ予想（統計AI）を実行して、印・確率・買い目をまとめる。
 
     展示が出た後でオッズが120通りそろっていれば、オッズ（世間の評価）も確率に取り込む。
@@ -281,7 +281,7 @@ def analyze(race: dict, style: str = formation.DEFAULT_STYLE, odds: dict | None 
             pred["P_model"] = pred["P"]
             pred.update(model.summarize(blended))
             pred["market"] = True
-    sug = formation.suggest(pred["P"], style)
+    sug = formation.suggest(pred["P"], style, odds, avoid_trigami)
     cards = []
     if sug["main"]:
         cards.append(formation.describe(sug["main"], pred["P"], odds, "本線"))
@@ -293,6 +293,7 @@ def analyze(race: dict, style: str = formation.DEFAULT_STYLE, odds: dict | None 
         "cards": cards,
         "others": formation.other_bets(pred["P"]),
         "style": style,
+        "trimmed_from": sug.get("trimmed_from"),
     }
 
 

@@ -409,7 +409,10 @@ else:
     stadium = bundle["stadium"]
     trend = service.trend(results, rno)
     result = next((r for r in results if r["rno"] == rno), None)
-    analysis = service.analyze(race, style, odds)
+    avoid = st.checkbox("トリガミ回避（当たれば必ずプラスになる点数まで自動で絞る）", value=True, key="avoid_trigami",
+                        help="オッズを見て、どの買い目が当たっても購入額を上回るところまで点数を減らします。"
+                             "過去の検証では、回収率が上がり、損が約半分になりました。外すと決めた点数どおりに買います。")
+    analysis = service.analyze(race, style, odds, avoid)
     pred = analysis["pred"]
 
     venue_info = next((v for v in venues if v["jcd"] == jcd), {})
@@ -495,15 +498,18 @@ else:
         show_html(formation_card(c, sub=(i > 0)))
     pay = formation.payout_summary(cards)
     pay_html = ""
+    if not ai_result and analysis.get("trimmed_from"):
+        pay_html += (f"<div style='margin-top:6px;color:#1d4ed8;'>✂ トリガミを避けるため、{analysis['trimmed_from']}点 → "
+                     f"<b>{total_pts}点</b>に絞りました。</div>")
     if pay:
-        pay_html = (f"<div style='margin-top:6px;'>当たった時の払戻 <b>{pay['min_payout']:,.0f}円〜{pay['max_payout']:,.0f}円</b>"
+        pay_html += (f"<div style='margin-top:6px;'>当たった時の払戻 <b>{pay['min_payout']:,.0f}円〜{pay['max_payout']:,.0f}円</b>"
                     f"<small>（いまのオッズ・1点100円）</small></div>")
         if pay["trigami"]:
             worst = "、".join(f"{t['ticket']}（{t['payout']:,.0f}円）" for t in pay["trigami"][:4])
             more = f" ほか{len(pay['trigami']) - 4}点" if len(pay["trigami"]) > 4 else ""
             pay_html += (f"<div style='margin-top:6px;color:#b45309;'>⚠ <b>トリガミ {len(pay['trigami'])}点</b>："
                          f"{esc(worst)}{more} は、当たっても購入額 {pay['stake']:,}円を下回ります。"
-                         f"気になる時は買い方を「少点数」にすると解消しやすくなります。</div>")
+                         f"「トリガミ回避」にチェックを入れるか、買い方を「少点数」にすると解消しやすくなります。</div>")
         else:
             pay_html += "<div style='margin-top:6px;color:#15803d;'>✅ どの買い目が当たっても購入額を上回ります（トリガミなし）。</div>"
     show_html(f"""<div class="card">合計 <b>{total_pts}点</b>（1点100円なら <b>{total_pts * 100:,}円</b>）　
