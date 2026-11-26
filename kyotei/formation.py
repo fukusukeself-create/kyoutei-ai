@@ -19,7 +19,7 @@ STYLES = {
     "バランス": (8, 4),
     "少点数": (4, 2),
 }
-DEFAULT_STYLE = "的中重視"
+DEFAULT_STYLE = "バランス"
 
 _SUBSETS = [s for n in range(1, 7) for s in itertools.combinations(range(6), n)]
 _MASKS = np.zeros((len(_SUBSETS), 6))
@@ -134,6 +134,30 @@ def describe(f, P=None, odds=None, label="", exclude=()) -> dict:
         "tickets": rows,
         "prob": coverage(P, tickets) if P is not None else None,
         "reason": f.get("reason", ""),
+    }
+
+
+def payout_summary(cards, unit: int = 100) -> dict | None:
+    """買い目全体について、当たった時の払戻の幅と、トリガミ（当たっても購入額を下回る買い目）を出す。
+
+    オッズが全部の買い目にそろっている時だけ計算する。unit は1点あたりの金額（円）。
+    """
+    tickets = [t for c in cards for t in c["tickets"]]
+    if not tickets or not all(t.get("odds") for t in tickets):
+        return None
+    stake = len(tickets) * unit
+    pays = sorted((t["odds"] * unit, t["ticket"]) for t in tickets)
+    trigami = [{"ticket": tk, "payout": pay} for pay, tk in pays if pay < stake]
+    prob_known = all(t.get("prob") is not None for t in tickets)
+    return {
+        "stake": stake,
+        "min_payout": pays[0][0],
+        "max_payout": pays[-1][0],
+        "trigami": trigami,
+        # 当たった場合に購入額を上回る確率（＝トリガミでない買い目が当たる確率）
+        "profit_prob": sum(t["prob"] for t in tickets if t["odds"] * unit >= stake) if prob_known else None,
+        # データ予想の確率どおりに来るとした時の、払戻の期待値 ÷ 購入額
+        "expected_return": sum(t["prob"] * t["odds"] * unit for t in tickets) / stake if prob_known else None,
     }
 
 

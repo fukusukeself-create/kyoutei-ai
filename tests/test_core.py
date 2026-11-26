@@ -352,14 +352,21 @@ def test_instructions_are_stable_and_race_data_goes_in_user_message():
 
 def test_output_schema_matches_what_parse_response_reads():
     props = ai.OUTPUT_SCHEMA["properties"]
-    assert set(ai.OUTPUT_SCHEMA["required"]) == set(props) == {"summary", "in_trust", "slit", "scenario", "boats", "main", "sub", "key_point"}
+    assert set(ai.OUTPUT_SCHEMA["required"]) == set(props) == {"summary", "in_trust", "slit", "scenario", "boats", "main", "sub", "verdict", "verdict_reason", "key_point"}
     assert props["main"]["required"] == ["first", "second", "third", "reason"]
     sample = {"summary": "s", "in_trust": "A", "slit": "123/456", "scenario": "x", "key_point": "k",
               "boats": [{"boat": n, "mark": "", "comment": "c"} for n in range(1, 7)],
               "main": {"first": [1], "second": [2, 3], "third": [2, 3, 4], "reason": "r"},
-              "sub": {"first": [2], "second": [1], "third": [3], "reason": "r"}}
+              "sub": {"first": [2], "second": [1], "third": [3], "reason": "r"},
+              "verdict": "見送り", "verdict_reason": "混戦で絞れない"}
     r = ai.parse_response(__import__("json").dumps(sample, ensure_ascii=False))
     assert len(r["boats"]) == 6 and formation.expand(r["sub"]) == [(2, 1, 3)]
+    assert r["verdict"] == "見送り" and r["verdict_reason"] == "混戦で絞れない"
+    # 抑えなし（空の配列）や、決まった語以外の判定が来ても壊れない
+    sample["sub"] = {"first": [], "second": [], "third": [], "reason": ""}
+    sample["verdict"] = "わからない"
+    r = ai.parse_response(__import__("json").dumps(sample, ensure_ascii=False))
+    assert r["sub"] is None and r["verdict"] == "" and r["main"]["first"] == [1]
 
 
 def test_predict_with_ai_uses_claude_and_retries_once_on_invalid_bets(monkeypatch):
@@ -392,3 +399,82 @@ def test_predict_with_ai_falls_back_to_gemini_provider(monkeypatch):
     monkeypatch.setattr(ai, "call_gemini", lambda key, prompt, model_name=None: GOOD)
     r = ai.predict_with_ai("gemini", "gem", race, analysis, "少点数")
     assert r["provider"] == "gemini" and r["usage"] is None and r["main"]["second"] == [2, 3]
+
+
+# ---------------------------------------------------------------- 払戻とトリガミ
+def test_payout_summary_flags_trigami_only_when_all_odds_known():
+    P = model.predict(make_race())["P"]
+    main = {"first": [1], "second": [2, 3], "third": [2, 3, 4]}          # 4点 = 400円
+    odds = {"1-2-3": 3.5, "1-2-4": 12.0, "1-3-2": 4.0, "1-3-4": 30.0}
+    card = formation.describe(main, P, odds, "本線")
+    s = formation.payout_summary([card])
+    assert s["stake"] == 400 and s["min_payout"] == 350 and s["max_payout"] == 3000
+    assert [t["ticket"] for t in s["trigami"]] == ["1-2-3"]              # 350円 < 400円。400円ちょうどはトリガミにしない
+    assert s["profit_prob"] == pytest.approx(P[0, 1, 3] + P[0, 2, 1] + P[0, 2, 3])
+    assert s["expected_return"] == pytest.approx((P[0, 1, 2] * 350 + P[0, 1, 3] * 1200 + P[0, 2, 1] * 400 + P[0, 2, 3] * 3000) / 400)
+    # オッズが1点でも欠けていたら出さない（発売前など）
+    assert formation.payout_summary([formation.describe(main, P, {"1-2-3": 3.5}, "本線")]) is None
+    assert formation.payout_summary([formation.describe(main, P, None, "本線")]) is None
+
+
+def test_default_style_is_balance():
+    assert formation.DEFAULT_STYLE == "バランス"
+    a = service.analyze(make_race())
+    assert a["style"] == "バランス" and sum(c["points"] for c in a["cards"]) <= 12
+
+
+def test_race_text_shows_odds_and_trigami_for_model_bets():
+    race = make_race()
+    P = model.predict(race)["P"]
+    odds = {f"{i + 1}-{j + 1}-{k + 1}": round(0.75 / max(P[i, j, k], 1e-6), 1) for i, j, k in itertools.permutations(range(6), 3)}
+    analysis = service.analyze(race, "バランス", odds)
+    text = ai.build_race_text(race, analysis, odds=odds)
+    top = analysis["pred"]["trifecta"][0][1]
+    key = "-".join(map(str, top))
+    assert f"{key}:" in text and f"({odds[key]:.1f}倍)" in text and "トリガミ" in text
+    assert "倍)" not in ai.build_race_text(race, service.analyze(race, "バランス"), odds=None).split("3連単の確率上位")[1]
+    inst = ai.build_instructions("バランス")
+    assert "穴狙いはしません" in inst and "見送り" in inst and "8 点以内" in inst
+
+
+# ---------------------------------------------------------------- オッズの取り込み
+def _odds_from(P, boost=None):
+    odds = {f"{i + 1}-{j + 1}-{k + 1}": round(0.75 / max(P[i, j, k], 1e-6), 1) for i, j, k in itertools.permutations(range(6), 3)}
+    odds.update(boost or {})
+    return odds
+
+
+def test_market_blend_moves_probability_toward_odds():
+    P = model.predict(make_race())["P"]
+    # 世間が 4-5-6 を大本命(2倍)と見ている場合
+    odds = _odds_from(P, {"4-5-6": 2.0})
+    B = model.blend_with_market(P, odds)
+    assert B.sum() == pytest.approx(1.0) and B[3, 4, 5] > P[3, 4, 5] * 5
+    assert B[0, 0, 1] == 0 and B[2, 2, 2] == 0
+    # オッズがモデルと同じ見立てなら、ほとんど変わらない
+    same = model.blend_with_market(P, _odds_from(P))
+    assert np.abs(same - P).max() < 0.01
+    # 1点でもオッズが欠けていたら混ぜない
+    broken = dict(odds); del broken["1-2-3"]
+    assert model.blend_with_market(P, broken) is None and model.market_probs({}) is None
+    assert model.blend_with_market(P, odds, weight=0) is None
+
+
+def test_analyze_uses_odds_only_after_exhibition():
+    race = make_race()
+    P = model.predict(race)["P"]
+    # モデルでは5番手の買い目を、世間が大本命(2倍)と見ている場合 → 混ぜると順位が上がる
+    fifth = model.predict(race)["trifecta"][4][1]
+    key = "-".join(map(str, fifth))
+    odds = _odds_from(P, {key: 2.0})
+    live = service.analyze(race, "バランス", odds)
+    assert live["pred"]["market"] is True
+    assert fifth in [t for _, t in live["pred"]["trifecta"][:3]]
+    assert live["pred"]["P"][fifth[0] - 1, fifth[1] - 1, fifth[2] - 1] > P[fifth[0] - 1, fifth[1] - 1, fifth[2] - 1]
+    assert np.allclose(live["pred"]["P_model"], P) and sum(live["pred"]["win"]) == pytest.approx(1.0)
+    assert any(t["ticket"] == key for c in live["cards"] for t in c["tickets"])
+    # 展示前は、オッズがあってもモデルだけで出す
+    pre = service.analyze(make_race(preview=False), "バランス", odds)
+    assert pre["pred"]["market"] is False and "P_model" not in pre["pred"]
+    # オッズ無し
+    assert service.analyze(race, "バランス", {})["pred"]["market"] is False

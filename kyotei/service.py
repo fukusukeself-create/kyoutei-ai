@@ -269,8 +269,18 @@ def trend(results: list[dict], before_rno: int) -> dict | None:
 
 
 def analyze(race: dict, style: str = formation.DEFAULT_STYLE, odds: dict | None = None) -> dict:
-    """データ予想（統計AI）を実行して、印・確率・買い目をまとめる。"""
+    """データ予想（統計AI）を実行して、印・確率・買い目をまとめる。
+
+    展示が出た後でオッズが120通りそろっていれば、オッズ（世間の評価）も確率に取り込む。
+    展示前はオッズがまだ薄く当てにならないので、モデルだけで出す。
+    """
     pred = model.predict(race)
+    if pred["mode"] == "live":
+        blended = model.blend_with_market(pred["P"], odds)
+        if blended is not None:
+            pred["P_model"] = pred["P"]
+            pred.update(model.summarize(blended))
+            pred["market"] = True
     sug = formation.suggest(pred["P"], style)
     cards = []
     if sug["main"]:
