@@ -1,7 +1,11 @@
 """データ取得の段取り（公式サイト優先・ダメなら Open API）と、予想に使う集計。"""
 from __future__ import annotations
 
+import concurrent.futures as cf
+import copy
 import datetime
+import threading
+import time
 
 from . import formation, model, openapi, sources
 from .sources import SourceError
@@ -48,11 +52,9 @@ def get_schedule(hd: str) -> dict:
                 "time_zone": "", "cancelled": False,
             })
 
-    # 締切時刻は Open API の出走表から。まだ無い時は、公式の開催一覧に出ている「次のレース」だけ使う
+    # 締切時刻は Open API の出走表（1日ぶんを1回で取れる）から
     for v in venues:
         v["deadlines"] = dict(by_venue.get(v["jcd"], {}).get("deadlines", {}))
-        if not v["deadlines"] and v.get("next_rno") and v.get("next_deadline"):
-            v["deadlines"] = {v["next_rno"]: v["next_deadline"]}
     if not venues:
         notes.append("この日の開催情報が見つかりませんでした。")
     return {"venues": venues, "notes": notes}
@@ -167,6 +169,80 @@ def get_stadium(jcd: int) -> dict | None:
         return sources.fetch_stadium(jcd)
     except SourceError:
         return None
+
+
+# ---------------------------------------------------------------------------
+# 1レースぶんをまとめて取得（同時に取りに行くので、1ページ10秒かかる時でも全体で約10秒）
+# ---------------------------------------------------------------------------
+# 何度も同じページを取りに行かないための短時間キャッシュ。
+# 直前情報・オッズは刻々と変わるので短く、出走表・場データは長く持つ。
+TTL_PROGRAM = 600.0
+TTL_STADIUM = 86400.0
+TTL_PREVIEW = 30.0
+TTL_PREVIEW_EMPTY = 20.0   # 展示がまだ出ていない時は早めに取り直す
+TTL_ODDS = 30.0
+TTL_RESULTS = 90.0
+
+_cache: dict = {}
+_cache_lock = threading.Lock()
+
+
+def _cached(key, fn, ttl, ttl_empty=None):
+    now = time.time()
+    with _cache_lock:
+        hit = _cache.get(key)
+        if hit and hit[0] > now:
+            return hit[1]
+    value = fn()
+    keep = ttl if (value or ttl_empty is None) else ttl_empty
+    with _cache_lock:
+        _cache[key] = (time.time() + keep, value)
+        if len(_cache) > 2000:
+            for k in [k for k, v in _cache.items() if v[0] <= now]:
+                del _cache[k]
+    return value
+
+
+def preview_cached(jcd: int, rno: int, hd: str) -> dict | None:
+    return _cached(("preview", jcd, rno, hd), lambda: get_preview(jcd, rno, hd), TTL_PREVIEW, TTL_PREVIEW_EMPTY)
+
+
+def clear_live(jcd: int, rno: int, hd: str) -> None:
+    """「最新に更新」用。直前情報・オッズ・結果のキャッシュを捨てる。"""
+    with _cache_lock:
+        for key in [("preview", jcd, rno, hd), ("original", jcd, rno, hd), ("odds", jcd, rno, hd), ("results", jcd, hd)]:
+            _cache.pop(key, None)
+
+
+def get_bundle(jcd: int, rno: int, hd: str) -> dict:
+    """予想に使うデータ一式。出走表が取れなければ SourceError。
+
+    戻り値: {race(直前情報は race["preview"]), original, odds, results, stadium}
+    """
+    jobs = {
+        "race": lambda: _cached(("program", jcd, rno, hd), lambda: get_program(jcd, rno, hd), TTL_PROGRAM),
+        "preview": lambda: preview_cached(jcd, rno, hd),
+        "original": lambda: _cached(("original", jcd, rno, hd), lambda: get_original_exhibition(jcd, rno, hd), TTL_PREVIEW, TTL_PREVIEW_EMPTY),
+        "odds": lambda: _cached(("odds", jcd, rno, hd), lambda: get_odds(jcd, rno, hd), TTL_ODDS, TTL_PREVIEW_EMPTY),
+        "results": lambda: _cached(("results", jcd, hd), lambda: get_results(jcd, hd), TTL_RESULTS),
+        "stadium": lambda: _cached(("stadium", jcd), lambda: get_stadium(jcd), TTL_STADIUM, 300.0),
+    }
+    with cf.ThreadPoolExecutor(max_workers=len(jobs)) as ex:
+        futures = {name: ex.submit(fn) for name, fn in jobs.items()}
+        out = {name: f.result() for name, f in futures.items()}
+    race = copy.deepcopy(out["race"])
+    race["preview"] = copy.deepcopy(out["preview"])
+    return {"race": race, "original": out["original"], "odds": out["odds"] or {},
+            "results": out["results"] or [], "stadium": out["stadium"]}
+
+
+def minutes_to_deadline(deadline: str, hd: str, now: datetime.datetime | None = None):
+    """締切までの残り分数。当日でない・時刻不明なら None。締切を過ぎていれば負の数。"""
+    now = now or now_jst()
+    if not deadline or hd != now.strftime("%Y%m%d"):
+        return None
+    h, m = map(int, deadline.split(":"))
+    return (h * 60 + m) - (now.hour * 60 + now.minute)
 
 
 # ---------------------------------------------------------------------------

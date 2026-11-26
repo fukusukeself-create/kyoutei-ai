@@ -92,36 +92,6 @@ def load_schedule(hd):
     return service.get_schedule(hd)
 
 
-@st.cache_data(ttl=600, show_spinner=False)
-def load_program(jcd, rno, hd):
-    return service.get_program(jcd, rno, hd)
-
-
-@st.cache_data(ttl=45, show_spinner=False)
-def load_preview(jcd, rno, hd):
-    return service.get_preview(jcd, rno, hd)
-
-
-@st.cache_data(ttl=45, show_spinner=False)
-def load_original(jcd, rno, hd):
-    return service.get_original_exhibition(jcd, rno, hd)
-
-
-@st.cache_data(ttl=45, show_spinner=False)
-def load_odds(jcd, rno, hd):
-    return service.get_odds(jcd, rno, hd)
-
-
-@st.cache_data(ttl=120, show_spinner=False)
-def load_results(jcd, hd):
-    return service.get_results(jcd, hd)
-
-
-@st.cache_data(ttl=86400, show_spinner=False)
-def load_stadium(jcd):
-    return service.get_stadium(jcd)
-
-
 def get_api_key():
     try:
         key = st.secrets.get("GEMINI_API_KEY", "")
@@ -241,31 +211,57 @@ def program_table(race, courses):
 
 def preview_table(race, pv, original):
     ex = {b: v.get("ex_time") for b, v in pv["boats"].items() if v.get("ex_time")}
-    best = min(ex.values()) if ex else None
+    rank = {b: i + 1 for i, (b, _) in enumerate(sorted(ex.items(), key=lambda kv: kv[1]))}
     cols = original["columns"] if original else []
     best_o = {c: min((v.get(c) for v in original["boats"].values() if v.get(c)), default=None) for c in cols} if original else {}
     rows = ""
     for b in race["boats"]:
         p = pv["boats"].get(b["boat"], {})
+        course = p.get("course")
+        if course and course != b["boat"]:
+            c_txt = f"<span class='best'>{course}{'↑' if course < b['boat'] else '↓'}</span>"
+        else:
+            c_txt = esc(course or "-")
         st_v = p.get("st")
         st_txt = "-" if st_v is None else (f"<span class='best'>F{abs(st_v):.2f}</span>" if st_v < 0 else f"{st_v:.2f}")
         et = p.get("ex_time")
-        et_txt = f"<span class='best'>{et:.2f}</span>" if et and best and et <= best else fnum(et)
+        r = rank.get(b["boat"])
+        et_txt = (f"<span class='{'best' if r == 1 else ''}'>{et:.2f}</span> <small>{r}位</small>") if et and r else "-"
         o_txt = ""
         for c in cols:
             v = (original["boats"].get(b["boat"]) or {}).get(c)
             o_txt += "<td>" + (f"<span class='best'>{v:.2f}</span>" if v and best_o.get(c) and v <= best_o[c] else fnum(v)) + "</td>"
         parts = " ".join(x for x in [p.get("parts"), p.get("propeller")] if x)
-        rows += (f"<tr><td>{chip(b['boat'])}</td><td>{esc(p.get('course') or '-')}</td><td>{st_txt}</td><td>{et_txt}</td>"
-                 f"{o_txt}<td>{fnum(p.get('tilt'), '{:.1f}')}</td><td class='l'>{esc(parts)}</td></tr>")
+        adj = f" 調整{p['weight_adj']:.1f}kg" if p.get("weight_adj") else ""
+        rows += (f"<tr><td>{chip(b['boat'])}</td><td>{c_txt}</td><td>{st_txt}</td><td>{et_txt}</td>"
+                 f"{o_txt}<td>{fnum(p.get('tilt'), '{:.1f}')}</td><td class='l'>{esc(parts + adj)}</td></tr>")
     head = "".join(f"<th>{esc(c)}</th>" for c in cols)
     wind = model.wind_label(pv.get("wind"), pv.get("wind_dir"))
-    weather = (f"<div class='note' style='margin-bottom:4px;'>{esc(pv.get('weather') or '')}　気温{fnum(pv.get('temp'), '{:.0f}')}℃　"
+    as_of = f"（{esc(pv['as_of'])}）" if pv.get("as_of") else ""
+    weather = (f"<div style='margin-bottom:6px;font-size:0.88rem;'>{esc(pv.get('weather') or '')}　気温{fnum(pv.get('temp'), '{:.0f}')}℃　"
                f"<b>風 {esc(wind)} {fnum(pv.get('wind'), '{:.0f}')}m</b>　波{fnum(pv.get('wave'), '{:.0f}')}cm　"
-               f"水温{fnum(pv.get('water_temp'), '{:.0f}')}℃</div>")
-    return (weather + "<div class='tw'><table class='t'><tr><th>枠</th><th>進入</th><th>展示ST</th><th>展示タイム</th>"
-            + head + "<th>チルト</th><th>部品交換</th></tr>" + rows + "</table></div>"
-            "<div class='note'>赤字はその項目でいちばん良い艇。タイムは小さいほど速い。</div>")
+               f"水温{fnum(pv.get('water_temp'), '{:.0f}')}℃ <small>{as_of}</small></div>")
+    slit = sorted(race["boats"], key=lambda b: pv["boats"].get(b["boat"], {}).get("course") or b["boat"])
+    slit_html = "".join(chip(b["boat"], small=True) for b in slit)
+    return (weather + f"<div style='margin-bottom:6px;font-size:0.88rem;'>スタート展示の進入（内から） {slit_html}</div>"
+            "<div class='tw'><table class='t'><tr><th>枠</th><th>進入</th><th>展示ST</th><th>展示タイム</th>"
+            + head + "<th>チルト</th><th>部品交換など</th></tr>" + rows + "</table></div>"
+            "<div class='note'>赤字＝その項目で一番良い艇／進入が枠と違う艇（↑内へ ↓外へ）／フライング(F)。タイムは小さいほど速い。</div>")
+
+
+@st.fragment(run_every=30)
+def wait_for_exhibition(jcd, rno, hd, deadline):
+    """展示がまだ出ていない間、30秒ごとに直前情報を確認し、出たら画面全体を自動で更新する。"""
+    left = service.minutes_to_deadline(deadline, hd)
+    if left is None or left < 0:
+        return
+    if left > 45:
+        st.caption(f"⏳ 展示は締切の約30分前から出ます（締切まであと{left}分）。近づいたら自動で確認を始めます。")
+        return
+    pv = service.preview_cached(jcd, rno, hd)
+    if pv and any(b.get("ex_time") for b in pv["boats"].values()):
+        st.rerun()
+    st.caption(f"⏳ 展示が出るのを自動で確認中…（{service.now_jst():%H:%M:%S} 確認・締切まであと{left}分）出たら自動で予想を更新します。")
 
 
 # ----------------------------------------------------
@@ -395,25 +391,22 @@ else:
     hd = ss.hd
 
     if st.button("🔄 最新の展示・オッズに更新", use_container_width=True):
-        for fn in (load_preview, load_original, load_odds, load_results, load_program):
-            fn.clear()
+        service.clear_live(jcd, rno, hd)
         st.rerun()
 
     try:
-        with st.spinner("出走表を取得中..."):
-            race = load_program(jcd, rno, hd)
+        with st.spinner("出走表・直前情報（展示）・オッズ・本日の結果を取得中...（10秒ほどかかることがあります）"):
+            bundle = service.get_bundle(jcd, rno, hd)
     except SourceError as e:
         st.error(str(e))
         st.stop()
-
-    with st.spinner("直前情報・オッズ・本日の結果を取得中..."):
-        pv = load_preview(jcd, rno, hd)
-        race["preview"] = pv
-        live = model.has_preview(race)
-        original = load_original(jcd, rno, hd) if live else None
-        odds = load_odds(jcd, rno, hd)
-        results = load_results(jcd, hd)
-        stadium = load_stadium(jcd)
+    race = bundle["race"]
+    pv = race["preview"]
+    live = model.has_preview(race)
+    original = bundle["original"] if live else None
+    odds = bundle["odds"]
+    results = bundle["results"]
+    stadium = bundle["stadium"]
     trend = service.trend(results, rno)
     result = next((r for r in results if r["rno"] == rno), None)
     analysis = service.analyze(race, style, odds)
@@ -430,10 +423,14 @@ else:
     if race.get("note"):
         st.warning(race["note"])
 
+    # ---------- 直前情報（展示）----------
+    show_html('<div class="sec">⏱ 直前情報（展示）</div>')
     if live:
-        st.success("✅ 展示（直前情報）を反映した予想です。")
+        show_html(f'<div class="card">{preview_table(race, pv, original)}</div>')
+        st.success("✅ 展示タイム・スタート展示・風を反映した予想です。")
     else:
-        st.info("⏳ 展示（直前情報）はまだ出ていません。いまは出走表だけの予想です。締切の約20〜30分前に展示が出たら「最新の展示・オッズに更新」を押してください。")
+        st.info("展示（直前情報）はまだ出ていません。いまは出走表だけの予想です。")
+        wait_for_exhibition(jcd, rno, hd, dl)
 
     # ---------- AI（Gemini）----------
     ai_key = (hd, jcd, rno, style, live)
@@ -441,6 +438,8 @@ else:
     api_key = get_api_key()
     memo = st.text_area("AIに伝えたいメモ（任意）", key=f"memo_{hd}_{jcd}_{rno}", height=68,
                         placeholder="例: 3号艇は前検から伸びが良いらしい / 1号艇は足落ち など。気づいたことがあれば書くとAIが考慮します。")
+    if live and not ai_result and ss.ai_results.get((hd, jcd, rno, style, False)):
+        st.warning("展示が出ました。もう一度AIボタンを押すと、展示を反映した買い目に更新されます。")
     if st.button("🤖 AIに展開を読んでもらい、最終の買い目を出す", type="primary", use_container_width=True):
         if not api_key:
             st.error("Gemini APIキーが設定されていません（Streamlitの Secrets に GEMINI_API_KEY を登録してください）。下のデータ予想はAPIキーなしで使えます。")
@@ -532,10 +531,7 @@ else:
 
     # ---------- データ ----------
     show_html('<div class="sec">📋 集めたデータ</div>')
-    if live:
-        with st.expander("直前情報（展示タイム・スタート展示・風）", expanded=True):
-            show_html(preview_table(race, pv, original))
-    with st.expander("出走表（勝率・モーター・今節成績）", expanded=not live):
+    with st.expander("出走表（勝率・モーター・今節成績）", expanded=True):
         show_html(program_table(race, pred["courses"]))
         stats_meta = model.load_racer_stats().get("meta", {})
         show_html(f'<div class="note">「このコースの1着率」は過去約1年の実績（{esc(stats_meta.get("until", ""))}まで）。</div>')

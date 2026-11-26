@@ -252,3 +252,83 @@ def test_openapi_conversion_roundtrip():
         "payouts": {"trifecta": [{"combination": "3-4-1", "payout": 2450}]}})
     assert res["top3"] == (3, 4, 1) and res["technique"] == "まくり差し" and res["payouts"]["trifecta"] == [("3-4-1", 2450)]
     assert openapi.preview_to_dict({"boats": [{"racer_boat_number": 1, "racer_exhibition_time": None}]}) is None
+
+
+# ---------------------------------------------------------------- まとめて取得
+def test_get_bundle_fetches_everything_and_caches(monkeypatch):
+    calls = {"program": 0, "preview": 0, "odds": 0}
+    preview_box = {"value": None}
+
+    def program(jcd, rno, hd):
+        calls["program"] += 1
+        return make_race(preview=False)
+
+    def preview(jcd, rno, hd):
+        calls["preview"] += 1
+        return preview_box["value"]
+
+    def odds(jcd, rno, hd):
+        calls["odds"] += 1
+        return {"1-2-3": 7.7}
+
+    monkeypatch.setattr(service, "_cache", {})
+    monkeypatch.setattr(service, "get_program", program)
+    monkeypatch.setattr(service, "get_preview", preview)
+    monkeypatch.setattr(service, "get_odds", odds)
+    monkeypatch.setattr(service, "get_original_exhibition", lambda *a: None)
+    monkeypatch.setattr(service, "get_results", lambda *a: [{"rno": 1, "top3": (1, 2, 3), "payout": 900, "technique": "逃げ"}])
+    monkeypatch.setattr(service, "get_stadium", lambda *a: None)
+
+    b1 = service.get_bundle(12, 5, "20261125")
+    assert b1["race"]["preview"] is None and b1["odds"] == {"1-2-3": 7.7} and len(b1["results"]) == 1
+    assert not model.has_preview(b1["race"])
+    b1["race"]["boats"][0]["name"] = "書き換え"  # 呼び出し側が書き換えてもキャッシュは汚れない
+
+    b2 = service.get_bundle(12, 5, "20261125")
+    assert calls == {"program": 1, "preview": 1, "odds": 1}
+    assert b2["race"]["boats"][0]["name"] == "選手1"
+
+    # 展示が出たあと「最新に更新」すると、直前情報とオッズだけ取り直す（出走表は取り直さない）
+    preview_box["value"] = make_race()["preview"]
+    service.clear_live(12, 5, "20261125")
+    b3 = service.get_bundle(12, 5, "20261125")
+    assert calls == {"program": 1, "preview": 2, "odds": 2}
+    assert model.has_preview(b3["race"]) and service.analyze(b3["race"])["pred"]["mode"] == "live"
+
+
+def test_get_bundle_raises_when_program_unavailable(monkeypatch):
+    def fail(*a):
+        raise service.SourceError("出走表なし")
+    monkeypatch.setattr(service, "_cache", {})
+    monkeypatch.setattr(service, "get_program", fail)
+    for name in ("get_preview", "get_odds", "get_original_exhibition", "get_results", "get_stadium"):
+        monkeypatch.setattr(service, name, lambda *a: None)
+    with pytest.raises(service.SourceError):
+        service.get_bundle(1, 1, "20261125")
+
+
+def test_empty_preview_is_rechecked_sooner(monkeypatch):
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(service.time, "time", lambda: clock["t"])
+    monkeypatch.setattr(service, "_cache", {})
+    n = {"calls": 0}
+
+    def preview(*a):
+        n["calls"] += 1
+        return None
+    monkeypatch.setattr(service, "get_preview", preview)
+    service.preview_cached(1, 1, "20261125")
+    clock["t"] += service.TTL_PREVIEW_EMPTY - 1
+    service.preview_cached(1, 1, "20261125")
+    assert n["calls"] == 1
+    clock["t"] += 2
+    service.preview_cached(1, 1, "20261125")
+    assert n["calls"] == 2
+
+
+def test_minutes_to_deadline():
+    now = datetime.datetime(2026, 11, 25, 12, 0, tzinfo=service.JST)
+    assert service.minutes_to_deadline("12:26", "20261125", now) == 26
+    assert service.minutes_to_deadline("11:50", "20261125", now) == -10
+    assert service.minutes_to_deadline("12:26", "20261126", now) is None
+    assert service.minutes_to_deadline("", "20261125", now) is None

@@ -51,7 +51,9 @@ _session = requests.Session()
 
 # 公式サイトが遅い・繋がらない時は、しばらく公式へのアクセスをやめて予備データに任せる。
 # （遅い相手に何度もアクセスして待たされるのを防ぎ、相手のサーバーにも負荷をかけない）
-OFFICIAL_TIMEOUT = float(os.environ.get("KYOTEI_OFFICIAL_TIMEOUT", "7"))  # 秒。これ以上待たされたら予備データへ
+# 公式サイトは混雑時や海外のサーバーからだと1ページ10秒ほどかかることがある。直前情報（展示）は
+# 公式サイトが一番早く、予備の Open API は反映が遅れるので、公式は長めに待つ。
+OFFICIAL_TIMEOUT = float(os.environ.get("KYOTEI_OFFICIAL_TIMEOUT", "20"))  # 秒
 OFFICIAL_PAUSE_SEC = 180.0
 _official_paused_until = 0.0
 
@@ -191,14 +193,6 @@ def parse_index(html: str) -> list[dict]:
         title_link = tbody.find("a", href=re.compile(r"raceindex\?"))
         day = re.search(r"(\d{1,2}/\d{1,2})\s*-\s*(\d{1,2}/\d{1,2})\s*(初日|\d+日目|最終日)?", row_text)
         status = _text(tds[1]) if len(tds) > 1 else ""
-        # 開催中は、タイトルより前のセルに「5R」「締切予定 12:26」のように次のレースが出る
-        head_text = ""
-        for td in tds:
-            if title_link is not None and td.find("a", href=re.compile(r"raceindex\?")):
-                break
-            head_text += " " + _text(td)
-        m_rno = re.search(r"(?<!\d)(\d{1,2})\s*R", head_text)
-        m_time = re.search(r"(?<!\d)(\d{1,2}:\d{2})(?!\d)", head_text)
         classes = {c for td in tds for c in (td.get("class") or [])}
         if "is-nighter" in classes:
             time_zone = "ナイター"
@@ -216,8 +210,6 @@ def parse_index(html: str) -> list[dict]:
             "day_text": (day.group(3) or "") if day else "",
             "period": f"{day.group(1)}-{day.group(2)}" if day else "",
             "status_text": status,
-            "next_rno": int(m_rno.group(1)) if m_rno and m_time and 1 <= int(m_rno.group(1)) <= 12 else None,
-            "next_deadline": m_time.group(1) if m_rno and m_time else "",
             "time_zone": time_zone,
             "cancelled": "中止" in status,
         })
@@ -397,8 +389,8 @@ def parse_beforeinfo(html: str) -> dict | None:
     w = soup.select_one("div.weather1")
     weather = {"wind": None, "wind_dir": None, "wave": None, "weather": "", "temp": None, "water_temp": None, "as_of": ""}
     if w is not None:
-        m = re.search(r"(\d{1,2}:\d{2})\s*現在", _text(w.select_one(".weather1_title")))
-        weather["as_of"] = m.group(1) if m else ""
+        # 見出しは「水面気象情報 15:51現在」または「水面気象情報 1R時点」
+        weather["as_of"] = _text(w.select_one(".weather1_title")).replace("水面気象情報", "").strip()
         for unit in w.select(".weather1_bodyUnit"):
             cls = unit.get("class") or []
             title = _text(unit.select_one(".weather1_bodyUnitLabelTitle"))

@@ -99,7 +99,7 @@ def beforeinfo_html(with_times=True):
 def test_parse_beforeinfo():
     pv = sources.parse_beforeinfo(beforeinfo_html())
     assert (pv["wind"], pv["wind_dir"], pv["wave"], pv["weather"], pv["temp"], pv["water_temp"]) == (4.0, 13, 3.0, "晴", 14.0, 16.0)
-    assert pv["as_of"] == "15:51"
+    assert pv["as_of"] == "15:51現在"
     b = pv["boats"]
     assert b[1]["ex_time"] == 6.71 and b[1]["tilt"] == -0.5 and b[1]["weight"] == 51.0
     assert b[2]["parts"] == "リング×2" and b[5]["weight_adj"] == 1.5
@@ -153,7 +153,7 @@ def test_parse_stadium_and_index():
     assert sources.parse_stadium("<html></html>") is None
 
     index = """<div class="table1"><table>
-<tbody><tr><td class="is-arrow1"><a href="javascript:x"><img alt="丸亀"></a></td><td class="is-fBold">5R</td><td>締切予定時刻 16:32</td>
+<tbody><tr><td class="is-arrow1"><a href="javascript:x"><img alt="丸亀"></a></td><td class="is-fBold">5R以降 発売中</td>
 <td class="is-G3b"></td><td class="is-nighter"></td><td><a href="/owpc/pc/race/raceindex?jcd=15&hd=20261126">テスト杯</a></td>
 <td>11/24-11/29 ３日目</td><td><a href="/owpc/pc/race/racelist?rno=5&jcd=15&hd=20261126">出走表</a></td></tr></tbody>
 <tbody><tr><td><img alt="大村"></td><td>中止</td><td class="is-ippan"></td><td></td>
@@ -162,9 +162,6 @@ def test_parse_stadium_and_index():
     assert [(x["jcd"], x["name"], x["grade"], x["day_text"], x["time_zone"], x["cancelled"]) for x in v] == [
         (15, "丸亀", "G3", "3日目", "ナイター", False), (24, "大村", "一般", "初日", "", True)]
     assert v[0]["title"] == "テスト杯" and v[0]["period"] == "11/24-11/29"
-    # 開催中の場は次のレースと締切時刻が読める。中止の場は読めない
-    assert (v[0]["next_rno"], v[0]["next_deadline"]) == (5, "16:32")
-    assert (v[1]["next_rno"], v[1]["next_deadline"]) == (None, "")
 
 
 def test_parse_original_exhibition():
