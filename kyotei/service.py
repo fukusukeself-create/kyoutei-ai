@@ -277,34 +277,13 @@ def analyze(race: dict, style: str = formation.DEFAULT_STYLE, odds: dict | None 
         cards.append(formation.describe(sug["main"], pred["P"], odds, "本線"))
     if sug["sub"]:
         cards.append(formation.describe(sug["sub"], pred["P"], odds, "抑え"))
-    bought = [tuple(int(x) for x in t["ticket"].split("-")) for c in cards for t in c["tickets"]]
     return {
         "pred": pred,
         "marks": formation.marks(pred["win"], pred["top3"]),
         "cards": cards,
-        "hole": hole_card(pred["P"], odds, bought),
-        "upset": model.upset_level(pred["P"]),
         "others": formation.other_bets(pred["P"]),
         "style": style,
     }
-
-
-def hole_card(P, odds, bought, tickets=None, reason="") -> dict | None:
-    """穴（万舟狙い）の買い目カード。本線・抑えと重ならない最大8点を1点ずつ。
-
-    tickets を渡すとそれ（AIが選んだ穴）を使い、渡さなければデータ予想から選ぶ。
-    """
-    bought = set(bought)
-    if tickets is None:
-        tickets, basis = formation.suggest_hole(P, odds, bought)
-    else:
-        tickets = [t for t in tickets if t not in bought][:formation.HOLE_POINTS]
-        basis = "ai"
-    if not tickets:
-        return None
-    card = formation.describe_tickets(tickets, P, odds, "穴", reason)
-    card["basis"] = basis
-    return card
 
 
 def check_hit(cards: list[dict], top3) -> str | None:
